@@ -1,7 +1,7 @@
 # InfiRay T2 Pro — Python Driver
 
 A clean, well-tested Python driver for the InfiRay T2 Pro USB thermal camera.
-Designed for Linux. Built with TDD (54 tests, all passing).
+Designed for Linux. Built with TDD (66 tests, all passing).
 
 ## Install
 
@@ -41,6 +41,7 @@ infiray_t2pro/
 ├── commands.py      — Vendor command enum + packing logic
 ├── palettes.py      — Color palette enum + rendering
 ├── decode.py        — Raw YUYV frame decoding (16-bit thermal extraction)
+├── processing.py    — Two-point NUC, AGC, column FPN correction
 └── camera.py        — T2Pro class + injectable VideoBackend
 ```
 
@@ -48,12 +49,37 @@ The `VideoBackend` abstract class enables testing without hardware.
 `V4L2Backend` is the default real implementation. Inject a `FakeVideoBackend`
 in tests or use a custom backend for different hardware.
 
+## Image Processing
+
+Raw T2 Pro images have per-pixel offset and gain variation (visible as vertical
+stripes). The `processing` module provides three correction functions:
+
+```python
+from infiray_t2pro.processing import two_point_nuc, agc_percentile, correct_column_fpn
+
+# Two-point NUC: correct per-pixel offset AND gain
+corrected = two_point_nuc(raw_frame, dark_ref, bright_ref)
+
+# Column FPN: remove remaining vertical stripes
+corrected = correct_column_fpn(corrected)
+
+# Percentile-based AGC: best contrast, clips outlier pixels
+rendered = agc_percentile(corrected, low_percentile=1, high_percentile=99)
+```
+
+**Two-point NUC** requires two reference frames:
+1. **Dark reference**: captured with lens covered (per-pixel offsets)
+2. **Bright reference**: captured pointing at a uniform warm surface (per-pixel gains)
+
+See `examples/two_point_nuc.py` for the full workflow.
+
 ## Examples
 
 - `examples/capture_single.py` — Capture and save one frame
 - `examples/live_preview.py` — Live thermal video feed
 - `examples/nuc_calibration.py` — NUC calibration workflow
 - `examples/extract_metadata.py` — Capture with metadata row extraction
+- `examples/two_point_nuc.py` — Two-point NUC for high-quality images (removes stripes + FPN)
 
 ## Tests
 
@@ -61,8 +87,9 @@ in tests or use a custom backend for different hardware.
 pytest tests/ -v
 ```
 
-54 tests covering: command packing, palette rendering, frame decoding,
-NUC calibration, first-frame skip, auto-load calibration, and camera logic
+66 tests covering: command packing, palette rendering, frame decoding,
+NUC calibration, first-frame skip, auto-load calibration, two-point NUC,
+AGC (linear + percentile), column FPN correction, and camera logic
 (with mock hardware).
 
 ## Requirements
@@ -107,3 +134,4 @@ MIT — see [LICENSE](LICENSE)
 ## Credits
 
 - [julled/py_InfiRay_T2_Pro](https://github.com/julled/py_InfiRay_T2_Pro) — Original minimal T2 Pro driver, inspired the first-frame skip and auto-load NUC calibration patterns.
+- RMHansen (thermal imagery Discord) — Advice on two-point NUC, AGC, and 14-bit thermal data scaling.
