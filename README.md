@@ -6,7 +6,7 @@ Designed for Linux. Built with TDD (66 tests, all passing).
 ## Install
 
 ```bash
-git clone https://github.com/<your-org>/infiray-t2pro.git
+git clone https://github.com/sirEven/infiray-t2pro.git
 cd infiray-t2pro
 pip install -e .
 ```
@@ -80,6 +80,7 @@ See `examples/two_point_nuc.py` for the full workflow.
 - `examples/nuc_calibration.py` — NUC calibration workflow
 - `examples/extract_metadata.py` — Capture with metadata row extraction
 - `examples/two_point_nuc.py` — Two-point NUC for high-quality images (removes stripes + FPN)
+- `examples/live_preview_nuc.py` — Live preview with NUC + FPN correction (use for manual focus)
 
 ## Tests
 
@@ -105,6 +106,7 @@ AGC (linear + percentile), column FPN correction, and camera logic
 |---|---|
 | Sensor | 256×192 thermal (16-bit) |
 | Frame rate | 25 fps |
+| Focus | Manual (rotate lens enclosure by hand) |
 | USB | UVC, VID:PID 04b4:0100 (Cypress bridge) |
 | Format | YUYV 4:2:2, 196×256×2 bytes (192 image + 4 metadata rows) |
 | Temperature range | -20°C to 120°C (high gain) / -20°C to 400°C (low gain) |
@@ -117,6 +119,10 @@ AGC (linear + percentile), column FPN correction, and camera logic
 - ✅ NUC calibration (manual dark frame subtraction)
 - ✅ Auto-load NUC calibration from file on init
 - ✅ First-frame skip (first frame after stream open can have corrupted dynamic range)
+- ✅ Two-point NUC correction (per-pixel offset + gain)
+- ✅ Column FPN removal (vertical stripe correction)
+- ✅ Percentile-based AGC (outlier-resistant contrast stretching)
+- ✅ Live preview with NUC + FPN correction (use for manual focus tuning)
 - ✅ Vendor commands: shutter trigger, palette switching, gain selection
 - ✅ Metadata row extraction (4 rows per frame)
 
