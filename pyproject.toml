@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "infiray-t2pro"
+version = "0.1.0"
+description = "Python driver for the InfiRay T2 Pro USB thermal camera"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Dr. One"}]
+dependencies = [
+    "opencv-python>=4.5",
+    "numpy>=1.20",
+]
+
+[project.optional-dependencies]
+usb = ["pyusb>=1.2"]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+include = ["infiray_t2pro*"]
