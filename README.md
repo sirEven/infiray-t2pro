@@ -1,7 +1,7 @@
 # InfiRay T2 Pro — Python Driver
 
 A clean, well-tested Python driver for the InfiRay T2 Pro USB thermal camera.
-Designed for Linux. Built with TDD (49 tests, all passing).
+Designed for Linux. Built with TDD (54 tests, all passing).
 
 ## Install
 
@@ -61,8 +61,9 @@ in tests or use a custom backend for different hardware.
 pytest tests/ -v
 ```
 
-49 tests covering: command packing, palette rendering, frame decoding,
-NUC calibration, and camera logic (with mock hardware).
+54 tests covering: command packing, palette rendering, frame decoding,
+NUC calibration, first-frame skip, auto-load calibration, and camera logic
+(with mock hardware).
 
 ## Requirements
 
@@ -87,6 +88,8 @@ NUC calibration, and camera logic (with mock hardware).
 - ✅ Raw frame capture (256×192, 25fps, 16-bit)
 - ✅ Live preview with multiple color palettes
 - ✅ NUC calibration (manual dark frame subtraction)
+- ✅ Auto-load NUC calibration from file on init
+- ✅ First-frame skip (first frame after stream open can have corrupted dynamic range)
 - ✅ Vendor commands: shutter trigger, palette switching, gain selection
 - ✅ Metadata row extraction (4 rows per frame)
 
@@ -100,3 +103,7 @@ NUC calibration, and camera logic (with mock hardware).
 ## License
 
 MIT — see [LICENSE](LICENSE)
+
+## Credits
+
+- [julled/py_InfiRay_T2_Pro](https://github.com/julled/py_InfiRay_T2_Pro) — Original minimal T2 Pro driver, inspired the first-frame skip and auto-load NUC calibration patterns.

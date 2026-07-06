@@ -6,7 +6,7 @@ all logic can be tested without a physical camera connected.
 
 import numpy as np
 import pytest
-from unittest.mock import MagicMock, patch
+import os
 from infiray_t2pro.camera import T2Pro, VideoBackend
 from infiray_t2pro.commands import Command
 from infiray_t2pro.palettes import Palette
@@ -33,7 +33,6 @@ class FakeVideoBackend(VideoBackend):
         msb = (self._thermal >> 8).astype(np.uint8)
         raw[:192, :, 0] = lsb
         raw[:192, :, 1] = msb
-        # Metadata rows
         raw[192:, :, :] = 0
         return raw
 
@@ -70,17 +69,20 @@ class TestT2ProCapture:
         assert frame.shape == (192, 256)
 
     def test_capture_applies_nuc_when_calibrated(self):
-        """When NUC calibration is loaded, capture should subtract it."""
-        # Create a known thermal field
+        """When NUC calibration is loaded, capture (after first frame) should subtract it."""
         thermal = np.full((192, 256), 5000, dtype=np.uint16)
         backend = FakeVideoBackend(thermal_values=thermal)
 
         cam = T2Pro(backend=backend)
-        # Set NUC calibration to 1000
         cam.nuc_calib = np.full((192, 256), 1000, dtype=np.uint16)
 
-        frame = cam.capture()
-        assert np.allclose(frame, 4000)  # 5000 - 1000
+        # First capture skips NUC (first frame can be corrupted)
+        frame1 = cam.capture()
+        assert np.allclose(frame1, 5000)
+
+        # Second capture applies NUC: 5000 - 1000 = 4000
+        frame2 = cam.capture()
+        assert np.allclose(frame2, 4000)
 
     def test_capture_without_nuc_returns_raw_values(self):
         thermal = np.full((192, 256), 5000, dtype=np.uint16)

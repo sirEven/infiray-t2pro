@@ -78,13 +78,22 @@ class T2Pro:
     Args:
         camera_id: Video device index (0 for /dev/video0).
         backend: Video backend for hardware abstraction. If None, uses V4L2Backend.
+        nuc_calib_path: Path to a .npy NUC calibration file. If the file exists,
+                        it is loaded automatically on init. If it doesn't exist,
+                        calibration starts empty (call calibrate_nuc_manual() to create one).
     """
 
-    def __init__(self, camera_id: int = 0, backend: Optional[VideoBackend] = None):
+    def __init__(self, camera_id: int = 0, backend: Optional[VideoBackend] = None,
+                 nuc_calib_path: str = "t2pro_nuc_calib.npy"):
         self.camera_id = camera_id
         self._backend = backend if backend is not None else V4L2Backend(camera_id)
         self.nuc_calib: Optional[np.ndarray] = None
         self.palette = Palette.INFERNO
+        self._frame_count = 0
+
+        # Auto-load NUC calibration if file exists
+        if os.path.exists(nuc_calib_path):
+            self.nuc_calib = np.load(nuc_calib_path)
 
     def capture_raw(self, n_frames: int = 1, trash: int = 5) -> np.ndarray:
         """Capture raw 16-bit thermal frames without NUC correction."""
@@ -100,9 +109,15 @@ class T2Pro:
         return np.mean(frames, axis=0)
 
     def capture(self, n_frames: int = 5, apply_nuc: bool = True) -> np.ndarray:
-        """Capture a thermal frame with optional NUC correction."""
+        """Capture a thermal frame with optional NUC correction.
+
+        The first capture after init skips NUC correction because the first
+        frame after opening the stream can have corrupted dynamic range.
+        """
         frame = self.capture_raw(n_frames=n_frames)
-        if apply_nuc and self.nuc_calib is not None:
+        self._frame_count += 1
+
+        if apply_nuc and self.nuc_calib is not None and self._frame_count > 1:
             frame = frame - self.nuc_calib.astype(np.float32)
         return frame
 
