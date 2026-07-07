@@ -7,7 +7,7 @@ can decide what to do: retry, alert the pilot, or give up.
 
 import numpy as np
 import pytest
-from infiray_t2pro.camera import T2Pro, VideoBackend, StreamClosedError, FrameReadError
+from infiray_t2pro.camera import T2Pro, VideoBackend, StreamClosedError, FrameReadError, StreamOpenError
 
 
 class FailingBackend(VideoBackend):
@@ -141,7 +141,7 @@ class TestStartStreamFails:
         cam.start_stream(warmup=0)
         cam.stop_stream()
         # Second start: backend.open() raises RuntimeError
-        with pytest.raises(RuntimeError):
+        with pytest.raises(StreamOpenError):
             cam.start_stream(warmup=0)
 
     def test_start_stream_failure_leaves_stream_off(self):
@@ -153,7 +153,7 @@ class TestStartStreamFails:
         assert cam.is_streaming is False
         try:
             cam.start_stream(warmup=0)
-        except RuntimeError:
+        except StreamOpenError:
             pass
         assert cam.is_streaming is False
 

@@ -28,6 +28,16 @@ class StreamClosedError(RuntimeError):
     pass
 
 
+class StreamOpenError(RuntimeError):
+    """Raised when start_stream() fails — camera not found, open fails, or warmup fails.
+
+    The original error is chained and accessible via __cause__.
+    After a StreamOpenError, the stream is guaranteed to be off (is_streaming=False).
+    The caller can retry by calling start_stream() again.
+    """
+    pass
+
+
 class FrameReadError(RuntimeError):
     """Raised when reading a frame from the backend fails mid-stream.
 
@@ -138,15 +148,31 @@ class T2Pro:
         Args:
             warmup: Number of frames to discard after opening. The T2 Pro's
                     first frames can have unstable dynamic range.
+
+        Raises:
+            RuntimeError: If already streaming.
+            StreamOpenError: If the backend fails to open or warmup frames fail.
         """
         if self._is_streaming:
             raise RuntimeError("Already streaming. Call stop_stream() first.")
-        self._backend.open()
+        try:
+            self._backend.open()
+        except Exception as e:
+            raise StreamOpenError(f"Failed to open stream: {e}") from e
         self._is_streaming = True
         self._stream_frame_count = 0
         # Discard warmup frames
-        for _ in range(warmup):
-            self._backend.read_raw()
+        try:
+            for _ in range(warmup):
+                self._backend.read_raw()
+        except Exception as e:
+            # Warmup failed — close the backend and clean up state
+            self._is_streaming = False
+            try:
+                self._backend.close()
+            except Exception:
+                pass  # best-effort close
+            raise StreamOpenError(f"Failed during warmup: {e}") from e
 
     def read_frame(self, apply_nuc: bool = True) -> np.ndarray:
         """Read a single frame from the open stream.
