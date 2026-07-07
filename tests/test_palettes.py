@@ -12,8 +12,11 @@ class TestPaletteEnum:
     def test_jet_exists(self):
         assert Palette.JET is not None
 
-    def test_grayscale_value(self):
-        assert Palette.GRAYSCALE == -1
+    def test_white_hot_value(self):
+        assert Palette.WHITE_HOT == -1
+
+    def test_black_hot_value(self):
+        assert Palette.BLACK_HOT == -2
 
 
 class TestApplyPalette:
@@ -30,11 +33,18 @@ class TestApplyPalette:
         assert result.dtype == np.uint8
 
     def test_output_is_scaled_up(self):
-        """Output should be 4x the input resolution for visibility."""
+        """Output should be scaled up for visibility (default 5x)."""
         thermal = np.random.randint(0, 65535, (192, 256), dtype=np.uint16)
         result = apply_palette(thermal, Palette.INFERNO)
-        assert result.shape[0] == 192 * 4
-        assert result.shape[1] == 256 * 4
+        assert result.shape[0] == 192 * 5
+        assert result.shape[1] == 256 * 5
+
+    def test_custom_scale(self):
+        """Scale parameter controls output resolution."""
+        thermal = np.random.randint(0, 65535, (192, 256), dtype=np.uint16)
+        result = apply_palette(thermal, Palette.INFERNO, scale=3)
+        assert result.shape[0] == 192 * 3
+        assert result.shape[1] == 256 * 3
 
     def test_uniform_input_produces_uniform_output(self):
         """A uniform thermal field should produce a uniform color image."""
@@ -44,13 +54,24 @@ class TestApplyPalette:
         unique_colors = np.unique(result.reshape(-1, 3), axis=0)
         assert len(unique_colors) == 1
 
-    def test_grayscale_produces_grayscale(self):
-        """Grayscale palette should produce equal R, G, B channels."""
+    def test_white_hot_produces_grayscale(self):
+        """White Hot palette should produce equal R, G, B channels."""
         thermal = np.random.randint(0, 65535, (192, 256), dtype=np.uint16)
-        result = apply_palette(thermal, Palette.GRAYSCALE)
+        result = apply_palette(thermal, Palette.WHITE_HOT)
         b, g, r = result[:, :, 0], result[:, :, 1], result[:, :, 2]
         assert np.array_equal(b, g)
         assert np.array_equal(g, r)
+
+    def test_black_hot_produces_inverted_grayscale(self):
+        """Black Hot palette should produce inverted grayscale (hot=dark)."""
+        thermal = np.zeros((192, 256), dtype=np.uint16)
+        thermal[:96] = 1000      # top half cold
+        thermal[96:] = 60000     # bottom half hot
+        result = apply_palette(thermal, Palette.BLACK_HOT)
+        # In Black Hot, hot pixels should be darker (lower values)
+        top_avg = result[:96].mean()
+        bottom_avg = result[96:].mean()
+        assert bottom_avg < top_avg
 
     def test_different_inputs_produce_different_outputs(self):
         """Two different thermal patterns should produce different images."""

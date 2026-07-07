@@ -39,7 +39,7 @@ print(f"Stream open: is_streaming={cam.is_streaming}")
 cv2.namedWindow("T2 Pro - Streaming NUC+FPN", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("T2 Pro - Streaming NUC+FPN", 1024, 768)
 
-palettes = [Palette.INFERNO, Palette.JET, Palette.TURBO, Palette.HOT]
+palettes = list(Palette)
 palette_idx = 0
 frame_count = 0
 

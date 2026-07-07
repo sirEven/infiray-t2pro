@@ -410,7 +410,7 @@ class T2Pro:
         cv2.namedWindow("InfiRay T2 Pro", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("InfiRay T2 Pro", 1024, 768)
 
-        palettes = [Palette.INFERNO, Palette.JET, Palette.TURBO, Palette.HOT]
+        palettes = list(Palette)
         cmap_idx = 0
         frame_count = 0
 

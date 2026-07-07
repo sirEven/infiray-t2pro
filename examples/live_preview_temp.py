@@ -6,8 +6,9 @@ Shows the thermal camera feed with real-time temperature overlay
 
 Controls:
     q - quit
-    s - save current frame
+    s - save current frame (PNG + raw numpy)
     c - cycle color palette
+    +/- - zoom in/out (change upscale factor)
     n - trigger NUC calibration (cover lens first!)
 """
 
@@ -17,13 +18,16 @@ import sys
 import os
 import time
 
-from infiray_t2pro import T2Pro, Palette, CAMERA_LENS_13, CAMERA_LENS_6_8
+from infiray_t2pro import T2Pro, Palette
 from infiray_t2pro.thermometry import ThermometryLib, calculate_temperature
-from infiray_t2pro.processing import agc_percentile, correct_column_fpn
-from infiray_t2pro.palettes import apply_palette
+from infiray_t2pro.palettes import PALETTE_NAMES, apply_palette
+from infiray_t2pro.processing import correct_column_fpn
 
 # Load dark reference if available
-dark_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "thermal_captures", "dark_reference.npy")
+dark_path = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "thermal_captures", "dark_reference.npy"
+)
 dark = None
 if os.path.exists(dark_path):
     dark = np.load(dark_path)
@@ -41,27 +45,26 @@ print(f"Stream open: is_streaming={cam.is_streaming}")
 
 tlib = ThermometryLib()
 
-cv2.namedWindow("T2 Pro - Thermal + Temperature", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("T2 Pro - Thermal + Temperature", 1024, 768)
-
-palettes = [Palette.INFERNO, Palette.JET, Palette.TURBO, Palette.HOT]
+# All available palettes — cycle with 'c'
+palettes = list(Palette)
 palette_idx = 0
+scale = 5  # 5x upscale = 1280x960 display
+
+cv2.namedWindow("T2 Pro - Thermal + Temperature", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("T2 Pro - Thermal + Temperature", 1280, 960)
+
 frame_count = 0
-temp_interval = 5  # Update temperature every N frames
 last_result = None
 last_temp_time = 0
 
 try:
     while True:
         frame = cam.read_frame()
-        if dark is not None:
-            corrected = correct_column_fpn(frame)
-        else:
-            corrected = frame
+        corrected = correct_column_fpn(frame) if dark is not None else frame
 
-        display = apply_palette(corrected, palettes[palette_idx])
+        display = apply_palette(corrected, palettes[palette_idx], scale=scale)
 
-        # Update temperature reading every 0.5 seconds
+        # Temperature readout — update every 0.5s
         now = time.time()
         if now - last_temp_time > 0.5:
             try:
@@ -69,10 +72,10 @@ try:
                 result = calculate_temperature(tlib, raw)
                 last_result = result
                 last_temp_time = now
-            except Exception as e:
-                pass  # Keep last reading on error
+            except Exception:
+                pass
 
-        # Temperature overlay
+        # Overlay
         if last_result is not None:
             r = last_result
             lines = [
@@ -81,21 +84,27 @@ try:
                 f"Min: {r.min_temp:.1f} C",
                 f"Avg: {r.avg_temp:.1f} C",
                 f"FPA: {r.fpa_temp:.1f} C",
-                f"Emiss: {r.emissivity:.2f} Dist: {r.distance}m",
+                f"Emiss: {r.emissivity:.2f}  Dist: {r.distance}m",
             ]
             y = 30
             for line in lines:
                 cv2.putText(display, line, (10, y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                y += 25
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2,
+                            cv2.LINE_AA)
+                y += 22
 
-            # Temperature in top-right
-            cv2.putText(display, f"{r.center_temp:.1f} C", (display.shape[1] - 150, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+            # Big temperature top-right
+            cv2.putText(display, f"{r.center_temp:.1f} C",
+                        (display.shape[1] - 180, 45),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 255, 0), 3,
+                        cv2.LINE_AA)
 
-        cv2.putText(display, "q=quit  s=save  c=palette  n=NUC",
-                    (10, display.shape[0] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        # Palette name bottom-left
+        pal_name = PALETTE_NAMES.get(palettes[palette_idx], str(palettes[palette_idx]))
+        cv2.putText(display, f"{pal_name}  |  q=quit s=save c=palette n=NUC +/-=zoom",
+                    (10, display.shape[0] - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1,
+                    cv2.LINE_AA)
 
         cv2.imshow("T2 Pro - Thermal + Temperature", display)
         frame_count += 1
@@ -110,16 +119,25 @@ try:
             print(f"Saved frame #{frame_count}")
         elif key == ord('c'):
             palette_idx = (palette_idx + 1) % len(palettes)
-            print(f"Palette: {palettes[palette_idx].name}")
+            pal_name = PALETTE_NAMES.get(palettes[palette_idx], str(palettes[palette_idx]))
+            print(f"Palette: {pal_name}")
         elif key == ord('n'):
             print("Triggering NUC calibration...")
             cam.trigger_shutter()
             print("Done.")
+        elif key in (ord('+'), ord('=')):
+            scale = min(scale + 1, 8)
+            print(f"Scale: {scale}x ({256*scale}x{192*scale})")
+        elif key == ord('-'):
+            scale = max(scale - 1, 2)
+            print(f"Scale: {scale}x ({256*scale}x{192*scale})")
 
 except KeyboardInterrupt:
     print("\nInterrupted.")
 except Exception as e:
     print(f"Error: {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
 finally:
     print("Stopping stream...")
     cam.stop_stream()
