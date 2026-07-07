@@ -1,7 +1,7 @@
 # InfiRay T2 Pro — Python Driver
 
 A clean, well-tested Python driver for the InfiRay T2 Pro USB thermal camera.
-Designed for Linux. Built with TDD (189 tests, all passing).
+Designed for Linux. Built with TDD (212 tests, all passing).
 
 ## Install
 
@@ -111,6 +111,36 @@ snap = take_snapshot(cam, temp_result=result, output_dir="snapshots")
 JSON metadata includes: center/max/min/avg/FPA temperatures, emissivity, distance,
 humidity, correction, reflection temp, ambient temp, file references.
 
+## Thermal Recording
+
+Record raw frames and temperature data to disk for post-flight analysis:
+
+```python
+from infiray_t2pro.recording import ThermalRecorder
+
+# Context manager — auto-starts/stops recording
+with ThermalRecorder(cam, tlib=tlib, output_dir="recordings") as rec:
+    for _ in range(100):
+        rec.record_frame()  # Raw frame + temperature calculation
+    # recorder.json written on exit
+
+# Fast mode — raw frames only, no temperature calculation
+with ThermalRecorder(cam, output_dir="recordings") as rec:
+    for _ in range(500):
+        rec.record_frame_fast()  # Maximum frame rate
+
+# Each session creates a directory:
+# recordings/2026-07-07_22-30-00/
+# ├── frames/000001.npy  — Raw YUYV frame data
+# ├── frames/000002.npy
+# ├── ...
+# ├── temps.jsonl        — One JSON line per frame with temperature data
+# └── recording.json      — Session metadata (fps, duration, frame count)
+```
+
+`record_frame()` calculates temperatures via tlib (slower). `record_frame_fast()`
+saves only the raw frame (faster, calculate temps offline later).
+
 ## Image Processing
 
 ### Smooth AGC (Adaptive Gain Control)
@@ -181,6 +211,7 @@ infiray_t2pro/
 ├── palettes.py        — 11 color palettes + apply_palette with AGC support
 ├── thermometry.py     — libthermometry.so wrapper, temperature calculation
 ├── snapshot.py        — take_snapshot() — PNG + .npy + JSON deliverables
+├── recording.py       — ThermalRecorder — raw frames + temps to disk
 └── camera.py          — T2Pro class, VideoBackend, streaming, auto-NUC
 ```
 
@@ -206,7 +237,7 @@ infiray_t2pro/
 
 | Example | Description |
 |---------|-------------|
-| `live_preview_temp.py` | Full live viewer with temperature overlay, AGC, denoise, snapshots |
+| `live_preview_temp.py` | Full live viewer: temp overlay, AGC, denoise, snapshots, recording |
 | `capture_single.py` | Capture and save one frame |
 | `live_preview.py` | Basic live thermal video feed |
 | `nuc_calibration.py` | NUC calibration workflow |
@@ -255,7 +286,8 @@ T2 Pro patches), auto-NUC, snapshot mode, and camera logic (with mock hardware).
 - ✅ Bilateral filter denoising — edge-preserving noise reduction
 - ✅ 5× LANCZOS4 upscale (1280×960 display)
 - ✅ Auto-NUC — periodic shutter calibration during streaming
-- ✅ Snapshot mode — PNG + raw numpy + JSON metadata deliverables
+- ✅ Snapshot mode — PNG + .npy + JSON deliverables
+- ✅ Thermal recording — raw frames + temperature stream to disk
 - ✅ NUC calibration (manual dark frame subtraction)
 - ✅ Two-point NUC correction (per-pixel offset + gain)
 - ✅ Column FPN removal (vertical stripe correction)
