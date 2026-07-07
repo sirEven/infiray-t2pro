@@ -1,29 +1,35 @@
 """InfiRay T2 Pro thermometry — temperature calculation from raw thermal data.
 
-Wraps the vendor's libthermometry.so (ARM64) via ctypes to convert raw
-14-bit pixel values to temperatures in °C.
+Wraps the vendor's libthermometry.so via ctypes to convert raw 14-bit pixel
+values to temperatures in °C.
+
+The library ships in two architectures alongside this module:
+  libs/x86_64/libthermometry.so   — Linux x86_64 (dev machines, MacBook)
+  libs/aarch64/libthermometry.so  — Linux aarch64 (Raspberry Pi 4/5)
+
+Auto-detection: ThermometryLib() with no arguments picks the right one based
+on the host platform. An explicit path can be passed to override.
+
+Source: InfiRay Xtherm Linux SDK V6.15 (official, glibc-linked, not Android).
 
 Architecture:
-- ThermometryLib: ctypes wrapper around libthermometry.so. Loads the shared
-  library and calls thermometryT4Line() / thermometrySearch() with proper
-  argument types.
+- ThermometryLib: ctypes wrapper. Loads libthermometry.so and calls
+  thermometryT4Line() / thermometrySearch() with proper argtypes.
 - parse_metadata_params(): extracts camera-embedded parameters (correction,
   reflection temp, ambient temp, humidity, emissivity, distance) from the
   4-row metadata section of a raw YUYV frame.
 - calculate_temperature(): high-level pipeline — parse metadata, build temp
-  table via thermometryT4Line, then compute per-pixel and summary temps via
-  thermometrySearch.
-
-The libthermometry.so is ARM64-only (ships in the Android APK). On x86_64
-dev machines it cannot be loaded — tests mock the ctypes layer. On RPi the
-real library is used for accurate temperature calculation.
+  table, then compute per-pixel and summary temps.
 
 Fail-fast: if the library is missing or fails to load, clear exceptions are
 raised. No silent fallback to wrong temperatures.
 """
 
 import ctypes
+import platform
+import struct
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -180,29 +186,61 @@ def parse_metadata_params(metadata: np.ndarray) -> MetadataParams:
 # ThermometryLib: ctypes wrapper
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
+
+_LIBS_DIR = Path(__file__).parent / "libs"
+
+def _default_lib_path() -> str:
+    """Return the path to the bundled libthermometry.so for the current platform."""
+    machine = platform.machine().lower()
+    # Normalize common aliases
+    if machine in ("x86_64", "amd64"):
+        subdir = "x86_64"
+    elif machine in ("aarch64", "arm64"):
+        subdir = "aarch64"
+    else:
+        raise ThermometryLibNotFoundError(
+            f"Unsupported architecture '{machine}' — need x86_64 or aarch64"
+        )
+
+    lib_path = _LIBS_DIR / subdir / "libthermometry.so"
+    if not lib_path.exists():
+        raise ThermometryLibNotFoundError(
+            f"libthermometry.so not found at {lib_path}. "
+            f"Expected bundled library for {subdir}."
+        )
+    return str(lib_path)
+
+
 class ThermometryLib:
     """Wrapper around libthermometry.so for temperature calculation.
 
     Loads the shared library and provides typed Python methods that call
     the C functions with proper ctypes argtypes.
 
-    Usage on RPi:
+    Usage:
+        # Auto-detect platform:
+        tlib = ThermometryLib()
+        # Or explicit path:
         tlib = ThermometryLib("/path/to/libthermometry.so")
         result = calculate_temperature(tlib, raw_frame, ...)
-
-    The library is ARM64-only. On x86_64 it will fail to load — use mocked
-    ThermometryLib in tests.
     """
 
-    def __init__(self, lib_path: str):
-        """Load libthermometry.so from the given path.
+    def __init__(self, lib_path: Optional[str] = None):
+        """Load libthermometry.so.
 
         Args:
-            lib_path: Absolute path to libthermometry.so.
+            lib_path: Absolute path to libthermometry.so. If None, auto-detects
+                      the correct bundled library for the current platform.
 
         Raises:
-            ThermometryLibNotFoundError: If the library cannot be loaded.
+            ThermometryLibNotFoundError: If the library cannot be found or loaded.
         """
+        if lib_path is None:
+            lib_path = _default_lib_path()
+
         try:
             self._lib = ctypes.cdll.LoadLibrary(lib_path)
         except OSError as e:

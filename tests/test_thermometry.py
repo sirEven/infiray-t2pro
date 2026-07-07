@@ -231,6 +231,36 @@ class TestThermometryLib:
             tlib = ThermometryLib("/fake/path/libthermometry.so")
             mock_cdll.LoadLibrary.assert_called_once_with("/fake/path/libthermometry.so")
 
+    def test_init_auto_detects_platform(self):
+        """ThermometryLib auto-detects the correct lib for the current platform."""
+        from infiray_t2pro.thermometry import ThermometryLib, _LIBS_DIR
+        with patch.object(ctypes, 'cdll') as mock_cdll:
+            mock_lib = MagicMock()
+            mock_cdll.LoadLibrary.return_value = mock_lib
+            # Patch platform.machine to return x86_64
+            with patch('infiray_t2pro.thermometry.platform.machine', return_value='x86_64'):
+                tlib = ThermometryLib()
+                expected = str(_LIBS_DIR / "x86_64" / "libthermometry.so")
+                mock_cdll.LoadLibrary.assert_called_once_with(expected)
+
+    def test_init_auto_detects_aarch64(self):
+        """ThermometryLib picks aarch64 lib on ARM64 platforms."""
+        from infiray_t2pro.thermometry import ThermometryLib, _LIBS_DIR
+        with patch.object(ctypes, 'cdll') as mock_cdll:
+            mock_lib = MagicMock()
+            mock_cdll.LoadLibrary.return_value = mock_lib
+            with patch('infiray_t2pro.thermometry.platform.machine', return_value='aarch64'):
+                tlib = ThermometryLib()
+                expected = str(_LIBS_DIR / "aarch64" / "libthermometry.so")
+                mock_cdll.LoadLibrary.assert_called_once_with(expected)
+
+    def test_init_raises_on_unsupported_arch(self):
+        """ThermometryLib raises if platform is neither x86_64 nor aarch64."""
+        from infiray_t2pro.thermometry import ThermometryLib, ThermometryLibNotFoundError
+        with patch('infiray_t2pro.thermometry.platform.machine', return_value='mips'):
+            with pytest.raises(ThermometryLibNotFoundError, match="Unsupported architecture"):
+                ThermometryLib()
+
     def test_init_raises_if_lib_not_found(self):
         """ThermometryLib raises ThermometryLibNotFoundError if .so is missing."""
         from infiray_t2pro.thermometry import ThermometryLib, ThermometryLibNotFoundError
@@ -425,3 +455,97 @@ class TestConstants:
         from infiray_t2pro.thermometry import RANGE_MODE_120, RANGE_MODE_400
         assert RANGE_MODE_120 == 120
         assert RANGE_MODE_400 == 400
+
+
+# ---------------------------------------------------------------------------
+# Tests: Real library integration (x86_64 or aarch64)
+# ---------------------------------------------------------------------------
+
+class TestRealLibraryIntegration:
+    """Integration tests that load the actual bundled libthermometry.so.
+
+    These run on Linux x86_64 or aarch64 only. They verify that the library
+    loads, functions are callable, and produce reasonable output structure.
+    """
+
+    @pytest.fixture
+    def tlib(self):
+        """Load the real ThermometryLib for the current platform."""
+        import platform
+        machine = platform.machine().lower()
+        if machine not in ("x86_64", "amd64", "aarch64", "arm64"):
+            pytest.skip(f"Platform {machine} not supported by bundled libraries")
+        from infiray_t2pro.thermometry import ThermometryLib
+        try:
+            return ThermometryLib()
+        except OSError as e:
+            pytest.skip(f"Cannot load real library: {e}")
+
+    def test_real_lib_loads(self, tlib):
+        """The bundled libthermometry.so loads on this platform."""
+        assert tlib._lib is not None
+
+    def test_real_thermometry_t4_line_runs(self, tlib):
+        """thermometryT4Line runs without crashing on real data."""
+        temp_table = np.zeros(16384, dtype=np.float32)
+        four_line = np.zeros(4 * 256, dtype=np.uint16)
+        # Write minimal metadata: shutter temp and core temp
+        flat = four_line
+        flat[257] = 2982  # ~25°C shutter
+        flat[258] = 2982  # ~25°C core
+
+        fpa_temp = tlib.thermometry_t4_line(
+            width=256, height=196,
+            temp_table=temp_table,
+            four_line_para=four_line,
+            correction=-1.0,
+            reflection_temp=25.0,
+            ambient_temp=22.0,
+            humidity=0.45,
+            emissivity=0.95,
+            distance=3,
+            camera_lens=130,
+            shutter_fix=0.0,
+            range_mode=120,
+        )
+        # FPA temp should be a finite number (may be inaccurate with
+        # synthetic data, but must not crash)
+        assert np.isfinite(fpa_temp)
+        # Temp table should be filled (not all zeros)
+        assert np.count_nonzero(temp_table) > 0
+
+    def test_real_thermometry_search_runs(self, tlib):
+        """thermometrySearch runs without crashing."""
+        temp_table = np.zeros(16384, dtype=np.float32)
+        four_line = np.zeros(4 * 256, dtype=np.uint16)
+        flat = four_line
+        flat[257] = 2982
+        flat[258] = 2982
+
+        fpa_temp = tlib.thermometry_t4_line(
+            width=256, height=196,
+            temp_table=temp_table,
+            four_line_para=four_line,
+            correction=-1.0,
+            reflection_temp=25.0,
+            ambient_temp=22.0,
+            humidity=0.45,
+            emissivity=0.95,
+            distance=3,
+            camera_lens=130,
+            shutter_fix=0.0,
+            range_mode=120,
+        )
+
+        org_data = np.random.randint(3000, 7000, size=(192, 256), dtype=np.uint16)
+        result = tlib.thermometry_search(
+            width=256, height=196,
+            temp_table=temp_table,
+            org_data=org_data,
+            range_mode=120,
+            output_mode=4,
+        )
+        # Should return an array (values may be -273 with synthetic data,
+        # but the function must not crash)
+        assert isinstance(result, np.ndarray)
+        assert len(result) >= 10

@@ -1,0 +1,2 @@
+include infiray_t2pro/libs/x86_64/libthermometry.so
+include infiray_t2pro/libs/aarch64/libthermometry.so
