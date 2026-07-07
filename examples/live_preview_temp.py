@@ -10,7 +10,7 @@ the pixelation/flicker that per-frame normalize causes.
 
 Controls:
     q - quit
-    s - save current frame (PNG + raw numpy)
+    s - take snapshot (PNG + .npy + JSON metadata)
     c - cycle color palette
     +/- - zoom in/out (change upscale factor)
     n - trigger NUC calibration (cover lens first!)
@@ -29,6 +29,7 @@ from infiray_t2pro import T2Pro, Palette
 from infiray_t2pro.thermometry import ThermometryLib, calculate_temperature
 from infiray_t2pro.palettes import PALETTE_NAMES, apply_palette
 from infiray_t2pro.processing import AgcAutoRange, correct_column_fpn, denoise_thermal
+from infiray_t2pro.snapshot import take_snapshot
 
 # Load dark reference if available
 dark_path = os.path.join(
@@ -136,10 +137,19 @@ try:
         if key == ord('q'):
             break
         elif key == ord('s'):
-            ts = np.datetime_as_string(np.datetime64('now'), unit='s').replace(':', '-')
-            os.makedirs("thermal_captures", exist_ok=True)
-            cv2.imwrite(f"thermal_captures/temp_{ts}.png", display)
-            print(f"Saved frame #{frame_count}")
+            if last_result is not None:
+                snap = take_snapshot(
+                    cam, temp_result=last_result,
+                    output_dir="snapshots",
+                    palette=palettes[palette_idx],
+                    scale=scale,
+                    agc=agc if use_smooth_agc else None,
+                    dark=dark,
+                    apply_denoise=use_denoise,
+                )
+                print(f"Snapshot saved: {snap}")
+            else:
+                print("No temperature reading yet — wait for first reading.")
         elif key == ord('c'):
             palette_idx = (palette_idx + 1) % len(palettes)
             pal_name = PALETTE_NAMES.get(palettes[palette_idx], str(palettes[palette_idx]))
