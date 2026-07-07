@@ -10,6 +10,20 @@ import pytest
 from infiray_t2pro.camera import T2Pro, VideoBackend, StreamClosedError, FrameReadError, StreamOpenError
 
 
+def _make_thermal_raw(thermal_2d: np.ndarray) -> np.ndarray:
+    """Encode a 192x256 thermal array into raw YUYV-like bytes."""
+    raw = np.zeros((196, 256, 2), dtype=np.uint8)
+    raw[:192, :, 0] = (thermal_2d & 0xFF).astype(np.uint8)
+    raw[:192, :, 1] = (thermal_2d >> 8).astype(np.uint8)
+    return raw
+
+
+def _realistic_thermal(base=5000, noise_std=50, seed=42):
+    """Generate a realistic thermal frame with natural variance."""
+    rng = np.random.RandomState(seed)
+    return (base + rng.randn(192, 256) * noise_std).astype(np.float32).astype(np.uint16)
+
+
 class FailingBackend(VideoBackend):
     """A backend that fails on read_raw after N successful reads."""
 
@@ -30,11 +44,8 @@ class FailingBackend(VideoBackend):
         self.read_count += 1
         if self.read_count > self.fail_after:
             raise RuntimeError("No frame captured")
-        raw = np.zeros((196, 256, 2), dtype=np.uint8)
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
-        raw[:192, :, 0] = (thermal & 0xFF).astype(np.uint8)
-        raw[:192, :, 1] = (thermal >> 8).astype(np.uint8)
-        return raw
+        thermal = _realistic_thermal(base=5000, seed=self.read_count)
+        return _make_thermal_raw(thermal)
 
     def set_zoom(self, value):
         pass
@@ -63,11 +74,8 @@ class DisappearsBackend(VideoBackend):
         if not self._is_open:
             raise RuntimeError("Stream not open")
         self.read_count += 1
-        raw = np.zeros((196, 256, 2), dtype=np.uint8)
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
-        raw[:192, :, 0] = (thermal & 0xFF).astype(np.uint8)
-        raw[:192, :, 1] = (thermal >> 8).astype(np.uint8)
-        return raw
+        thermal = _realistic_thermal(base=5000, seed=self.read_count)
+        return _make_thermal_raw(thermal)
 
     def set_zoom(self, value):
         pass
@@ -164,11 +172,10 @@ class TestReconnectAfterFailure:
     def test_reconnect_after_read_failure(self):
         """A complete stop_stream + start_stream cycle should work after a read failure,
         IF the backend is healthy again."""
-        # Simulate: backend fails, then recovers
         class RecoveringBackend(VideoBackend):
             def __init__(self):
                 self._is_open = False
-                self.fail_next = True  # fail the first read
+                self.fail_next = True
                 self.read_count = 0
                 self.open_count = 0
                 self.close_count = 0
@@ -184,11 +191,8 @@ class TestReconnectAfterFailure:
                 if self.fail_next:
                     self.fail_next = False
                     raise RuntimeError("No frame captured")
-                raw = np.zeros((196, 256, 2), dtype=np.uint8)
-                thermal = np.full((192, 256), 5000, dtype=np.uint16)
-                raw[:192, :, 0] = (thermal & 0xFF).astype(np.uint8)
-                raw[:192, :, 1] = (thermal >> 8).astype(np.uint8)
-                return raw
+                thermal = _realistic_thermal(base=5000, seed=self.read_count)
+                return _make_thermal_raw(thermal)
 
             def set_zoom(self, value):
                 pass
@@ -210,6 +214,7 @@ class TestReconnectAfterFailure:
         # Now it works
         frame = cam.read_frame()
         assert frame.shape == (192, 256)
+        assert frame.std() > 0  # validation passes
         cam.stop_stream()
 
 
@@ -242,7 +247,6 @@ class TestStopStreamCleansUp:
         # is_streaming is already False, so stop_stream should be a no-op
         # (backend was already marked as not streaming)
         cam.stop_stream()
-        # The backend should have been closed by start_stream's close or is still open
         # The key point: no crash, consistent state
 
 

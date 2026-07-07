@@ -9,6 +9,20 @@ import pytest
 from infiray_t2pro.camera import T2Pro, VideoBackend, StreamOpenError, StreamClosedError
 
 
+def _make_thermal_raw(thermal_2d: np.ndarray) -> np.ndarray:
+    """Encode a 192x256 thermal array into raw YUYV-like bytes."""
+    raw = np.zeros((196, 256, 2), dtype=np.uint8)
+    raw[:192, :, 0] = (thermal_2d & 0xFF).astype(np.uint8)
+    raw[:192, :, 1] = (thermal_2d >> 8).astype(np.uint8)
+    return raw
+
+
+def _realistic_thermal(base=5000, noise_std=50, seed=42):
+    """Generate a realistic thermal frame with natural variance."""
+    rng = np.random.RandomState(seed)
+    return (base + rng.randn(192, 256) * noise_std).astype(np.float32).astype(np.uint16)
+
+
 class MissingBackend(VideoBackend):
     """A backend that fails to open (camera not found)."""
 
@@ -53,11 +67,8 @@ class WarmupFailBackend(VideoBackend):
         self._read_count += 1
         if self._read_count >= self._fail_on_warmup:
             raise RuntimeError("No frame captured")
-        raw = np.zeros((196, 256, 2), dtype=np.uint8)
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
-        raw[:192, :, 0] = (thermal & 0xFF).astype(np.uint8)
-        raw[:192, :, 1] = (thermal >> 8).astype(np.uint8)
-        return raw
+        thermal = _realistic_thermal(base=5000, seed=self._read_count)
+        return _make_thermal_raw(thermal)
 
     def set_zoom(self, value):
         pass
@@ -179,11 +190,8 @@ class TestRetryAfterOpenFailure:
             def read_raw(self):
                 if not self._is_open:
                     raise RuntimeError("Stream not open")
-                raw = np.zeros((196, 256, 2), dtype=np.uint8)
-                thermal = np.full((192, 256), 5000, dtype=np.uint16)
-                raw[:192, :, 0] = (thermal & 0xFF).astype(np.uint8)
-                raw[:192, :, 1] = (thermal >> 8).astype(np.uint8)
-                return raw
+                thermal = _realistic_thermal(base=5000, seed=self.open_count)
+                return _make_thermal_raw(thermal)
 
             def set_zoom(self, value):
                 pass

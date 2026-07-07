@@ -15,9 +15,12 @@ class FakeVideoBackend(VideoBackend):
 
     def __init__(self, thermal_values=None, camera_id=0):
         self.camera_id = camera_id
-        self._thermal = thermal_values if thermal_values is not None else np.random.randint(
-            3000, 9000, (192, 256), dtype=np.uint16
-        )
+        if thermal_values is not None:
+            self._thermal = thermal_values
+        else:
+            # Default: realistic thermal values with variance (passes validation)
+            rng = np.random.RandomState(42)
+            self._thermal = (rng.randint(3000, 9000, (192, 256))).astype(np.uint16)
         self.zoom_values_sent = []
         self.open_count = 0
         self.close_count = 0
@@ -46,6 +49,12 @@ class FakeVideoBackend(VideoBackend):
         self._is_open = False
 
 
+def _realistic_thermal(base=5000, noise_std=50, seed=42):
+    """Generate a realistic thermal array with natural variance."""
+    rng = np.random.RandomState(seed)
+    return (base + rng.randn(192, 256) * noise_std).astype(np.float32).astype(np.uint16)
+
+
 class TestStartStream:
     """T2Pro.start_stream() opens the backend and warms up."""
 
@@ -62,9 +71,6 @@ class TestStartStream:
         backend = FakeVideoBackend()
         cam = T2Pro(backend=backend)
         cam.start_stream(warmup=5)
-        # Backend was opened once (start_stream), warmup frames were read
-        # We can verify warmup by checking the backend was read from
-        # before read_frame is called
         cam.stop_stream()
 
     def test_start_stream_sets_is_streaming_true(self):
@@ -120,7 +126,7 @@ class TestReadFrame:
     """T2Pro.read_frame() reads a single frame from the open stream."""
 
     def test_read_frame_returns_192x256_array(self):
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
+        thermal = _realistic_thermal(base=5000)
         backend = FakeVideoBackend(thermal_values=thermal)
         cam = T2Pro(backend=backend)
         cam.start_stream()
@@ -128,7 +134,7 @@ class TestReadFrame:
         assert frame.shape == (192, 256)
 
     def test_read_frame_returns_float32(self):
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
+        thermal = _realistic_thermal(base=5000)
         backend = FakeVideoBackend(thermal_values=thermal)
         cam = T2Pro(backend=backend)
         cam.start_stream()
@@ -136,32 +142,36 @@ class TestReadFrame:
         assert frame.dtype == np.float32
 
     def test_read_frame_returns_correct_values(self):
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
+        thermal = _realistic_thermal(base=5000)
         backend = FakeVideoBackend(thermal_values=thermal)
         cam = T2Pro(backend=backend)
         cam.start_stream()
         frame = cam.read_frame()
-        assert np.allclose(frame, 5000)
+        # Values should be close to the input (allowing for noise)
+        assert np.allclose(frame, thermal, atol=1)
 
     def test_read_frame_with_nuc_applies_correction(self):
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
+        thermal = _realistic_thermal(base=5000)
+        dark = _realistic_thermal(base=500, noise_std=10)
         backend = FakeVideoBackend(thermal_values=thermal)
         cam = T2Pro(backend=backend)
-        cam.nuc_calib = np.full((192, 256), 1000, dtype=np.uint16)
+        cam.nuc_calib = dark
         cam.start_stream()
         # First read_frame after start_stream should skip NUC (warmup)
         frame1 = cam.read_frame()
+        assert np.allclose(frame1, thermal, atol=1)
         # After warmup, NUC should be applied
         frame2 = cam.read_frame()
-        assert np.allclose(frame2, 4000)  # 5000 - 1000
+        expected = thermal.astype(np.float32) - dark.astype(np.float32)
+        assert np.allclose(frame2, expected, atol=1)
 
     def test_read_frame_without_nuc_returns_raw(self):
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
+        thermal = _realistic_thermal(base=5000)
         backend = FakeVideoBackend(thermal_values=thermal)
         cam = T2Pro(backend=backend)
         cam.start_stream()
         frame = cam.read_frame()
-        assert np.allclose(frame, 5000)
+        assert np.allclose(frame, thermal, atol=1)
 
     def test_read_frame_when_not_streaming_raises(self):
         """Calling read_frame when stream is not open should raise StreamClosedError."""
@@ -172,8 +182,7 @@ class TestReadFrame:
 
     def test_multiple_read_frames_in_sequence(self):
         """Should be able to read many frames from an open stream."""
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
-        backend = FakeVideoBackend(thermal_values=thermal)
+        backend = FakeVideoBackend()
         cam = T2Pro(backend=backend)
         cam.start_stream()
         for _ in range(10):
@@ -182,8 +191,7 @@ class TestReadFrame:
         cam.stop_stream()
 
     def test_read_frame_increments_frame_count(self):
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
-        backend = FakeVideoBackend(thermal_values=thermal)
+        backend = FakeVideoBackend()
         cam = T2Pro(backend=backend)
         cam.start_stream()
         assert cam.frame_count == 0  # warmup frames don't count
@@ -221,14 +229,14 @@ class TestStreamingCaptureBackwardCompat:
 
     def test_capture_still_works(self):
         """capture() should still open/close per call for backward compatibility."""
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
+        thermal = _realistic_thermal(base=5000)
         backend = FakeVideoBackend(thermal_values=thermal)
         cam = T2Pro(backend=backend)
         frame = cam.capture()
         assert frame.shape == (192, 256)
 
     def test_capture_raw_still_works(self):
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
+        thermal = _realistic_thermal(base=5000)
         backend = FakeVideoBackend(thermal_values=thermal)
         cam = T2Pro(backend=backend)
         frame = cam.capture_raw()
@@ -236,7 +244,7 @@ class TestStreamingCaptureBackwardCompat:
 
     def test_capture_after_stream_stopped(self):
         """After streaming, capture() should still work (opens fresh)."""
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
+        thermal = _realistic_thermal(base=5000)
         backend = FakeVideoBackend(thermal_values=thermal)
         cam = T2Pro(backend=backend)
         cam.start_stream()
@@ -252,14 +260,15 @@ class TestStreamWarmup:
     def test_first_read_frame_after_start_skips_nuc(self):
         """The first frame after start_stream can have corrupted dynamic range.
         Even if NUC is loaded, the first read_frame should return raw values."""
-        thermal = np.full((192, 256), 5000, dtype=np.uint16)
+        thermal = _realistic_thermal(base=5000)
+        dark = _realistic_thermal(base=500, noise_std=10)
         backend = FakeVideoBackend(thermal_values=thermal)
         cam = T2Pro(backend=backend)
-        cam.nuc_calib = np.full((192, 256), 1000, dtype=np.uint16)
+        cam.nuc_calib = dark
         cam.start_stream()
         frame = cam.read_frame()
         # First frame after stream start should NOT have NUC applied
-        assert np.allclose(frame, 5000)
+        assert np.allclose(frame, thermal, atol=1)
 
     def test_configurable_warmup_count(self):
         """Number of warmup frames to discard should be configurable."""

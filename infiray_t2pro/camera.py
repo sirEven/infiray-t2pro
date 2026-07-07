@@ -187,6 +187,8 @@ class T2Pro:
 
         Raises:
             StreamClosedError: If stream is not open.
+            FrameReadError: If the backend fails or the frame is corrupt
+                           (all zeros or uniform value).
         """
         if not self._is_streaming:
             raise StreamClosedError("Stream is not open. Call start_stream() first.")
@@ -197,6 +199,15 @@ class T2Pro:
             self._is_streaming = False
             raise FrameReadError(f"Failed to read frame: {e}") from e
         frame = decode_frame(raw)
+
+        # Validate frame: detect corrupt reads
+        if np.all(frame == 0):
+            self._is_streaming = False
+            raise FrameReadError("Frame is all zeros — dead sensor or corrupt read")
+        if np.std(frame) == 0:
+            self._is_streaming = False
+            raise FrameReadError(f"Frame is uniform (all pixels = {frame.flat[0]:.0f}) — stuck sensor")
+
         self._stream_frame_count += 1
 
         if apply_nuc and self.nuc_calib is not None and self._stream_frame_count > 1:
