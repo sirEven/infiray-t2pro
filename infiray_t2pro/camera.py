@@ -128,6 +128,8 @@ class T2Pro:
         self._is_streaming = False
         self._stream_frame_count = 0
         self._tlib: Optional[ThermometryLib] = None
+        self._auto_nuc_interval: Optional[float] = None
+        self._last_nuc_time: float = 0.0
 
         # Auto-load NUC calibration if file exists
         if os.path.exists(nuc_calib_path):
@@ -145,7 +147,7 @@ class T2Pro:
         """Number of frames read since stream was started (excluding warmup)."""
         return self._stream_frame_count
 
-    def start_stream(self, warmup: int = 5) -> None:
+    def start_stream(self, warmup: int = 5, auto_nuc: Optional[float] = None) -> None:
         """Open the stream and warm up the camera.
 
         After calling this, use read_frame() to grab frames continuously.
@@ -154,6 +156,10 @@ class T2Pro:
         Args:
             warmup: Number of frames to discard after opening. The T2 Pro's
                     first frames can have unstable dynamic range.
+            auto_nuc: If set, trigger a shutter calibration every this many
+                     seconds during streaming. None (default) disables auto-NUC.
+                     The shutter is triggered inside read_frame() after reading
+                     a frame if the interval has elapsed.
 
         Raises:
             RuntimeError: If already streaming.
@@ -167,6 +173,8 @@ class T2Pro:
             raise StreamOpenError(f"Failed to open stream: {e}") from e
         self._is_streaming = True
         self._stream_frame_count = 0
+        self._auto_nuc_interval = auto_nuc
+        self._last_nuc_time = time.monotonic()
         # Discard warmup frames
         try:
             for _ in range(warmup):
@@ -215,6 +223,13 @@ class T2Pro:
             raise FrameReadError(f"Frame is uniform (all pixels = {frame.flat[0]:.0f}) — stuck sensor")
 
         self._stream_frame_count += 1
+
+        # Auto-NUC: trigger shutter if interval has elapsed
+        if self._auto_nuc_interval is not None:
+            now = time.monotonic()
+            if now - self._last_nuc_time >= self._auto_nuc_interval:
+                self.trigger_shutter()
+                self._last_nuc_time = now
 
         if apply_nuc and self.nuc_calib is not None and self._stream_frame_count > 1:
             frame = frame - self.nuc_calib.astype(np.float32)
@@ -289,16 +304,16 @@ class T2Pro:
             self._backend.close()
             self._is_streaming = False
 
-    def stream(self, warmup: int = 5):
+    def stream(self, warmup: int = 5, auto_nuc: Optional[float] = None):
         """Context manager for streaming mode.
 
         Usage:
             cam = T2Pro()
-            with cam.stream() as s:
+            with cam.stream(auto_nuc=120) as s:
                 for _ in range(100):
                     frame = s.read_frame()
         """
-        self.start_stream(warmup=warmup)
+        self.start_stream(warmup=warmup, auto_nuc=auto_nuc)
         return self
 
     def __enter__(self):

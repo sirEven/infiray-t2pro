@@ -47,7 +47,7 @@ if dark is not None:
     cam.nuc_calib = dark
 
 print("Starting stream...")
-cam.start_stream(warmup=10)
+cam.start_stream(warmup=10, auto_nuc=120)  # Auto-NUC every 2 minutes
 print(f"Stream open: is_streaming={cam.is_streaming}")
 
 tlib = ThermometryLib()
