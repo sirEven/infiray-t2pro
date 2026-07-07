@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Live preview with one-point NUC + column FPN correction.
 
-Use this to focus the lens: rotate the lens enclosure while watching
-the preview until the image is sharp.
+Uses the streaming API (start_stream / read_frame / stop_stream) instead of
+manual VideoCapture. This is the same pattern the future wrapper will use.
+
+Controls:
+    q - quit
+    s - save current frame
+    c - cycle color palette
+    n - trigger NUC calibration (cover lens first!)
 """
 
 import numpy as np
@@ -10,9 +16,9 @@ import cv2
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from infiray_t2pro.decode import decode_frame
+from infiray_t2pro import T2Pro, Palette
 from infiray_t2pro.processing import agc_percentile, correct_column_fpn
+from infiray_t2pro.palettes import apply_palette
 
 # Load dark reference
 dark_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "thermal_captures", "dark_reference.npy")
@@ -23,57 +29,63 @@ else:
     print("No dark reference found! Run capture_dark.py first.")
     sys.exit(1)
 
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
-if not cap.isOpened():
-    print("ERROR: Cannot open camera")
-    sys.exit(1)
+cam = T2Pro()
+cam.nuc_calib = dark  # Set NUC calibration so read_frame() applies it
 
-# Warm up
-print("Warming up sensor...")
-for _ in range(10):
-    cap.read()
+print("Starting stream...")
+cam.start_stream(warmup=10)
+print(f"Stream open: is_streaming={cam.is_streaming}")
 
-print("Live preview with NUC + FPN correction.")
-print("Rotate the lens enclosure to focus.")
-print("Press 'q' to quit, 's' to save frame.")
+cv2.namedWindow("T2 Pro - Streaming NUC+FPN", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("T2 Pro - Streaming NUC+FPN", 1024, 768)
 
+palettes = [Palette.INFERNO, Palette.JET, Palette.TURBO, Palette.HOT]
+palette_idx = 0
 frame_count = 0
-while True:
-    ret, raw = cap.read()
-    if not ret:
-        break
 
-    # Decode raw YUYV to 16-bit thermal
-    thermal = decode_frame(raw)
+try:
+    while True:
+        frame = cam.read_frame()
+        # read_frame() with NUC calib loaded already subtracts dark reference
+        # (after the first frame). Apply column FPN on top.
+        corrected = correct_column_fpn(frame)
 
-    # Apply one-point NUC (dark subtraction)
-    corrected = thermal - dark
+        # Apply palette to corrected thermal data for color rendering
+        display = apply_palette(corrected, palettes[palette_idx])
 
-    # Apply column FPN removal
-    corrected = correct_column_fpn(corrected)
+        # Info overlay
+        info = f"std={corrected.std():.0f} min={corrected.min():.0f} max={corrected.max():.0f} | #{frame_count}"
+        cv2.putText(display, info, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(display, "q=quit  s=save  c=palette  n=NUC calib", (10, display.shape[0] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-    # Percentile AGC for display
-    display = agc_percentile(corrected, low_percentile=1, high_percentile=99)
-
-    # Convert grayscale to BGR for display
-    display_bgr = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
-
-    # Add label
-    cv2.putText(display_bgr, "NUC+FPN | Press 'q' quit, 's' save", (5, 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-
-    cv2.imshow("T2 Pro - Live (NUC+FPN)", display_bgr)
-
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord('q'):
-        break
-    elif key == ord('s'):
-        os.makedirs("thermal_captures", exist_ok=True)
-        cv2.imwrite(f"thermal_captures/focused_frame_{frame_count:04d}.png", display)
-        print(f"Saved frame {frame_count}")
+        cv2.imshow("T2 Pro - Streaming NUC+FPN", display)
         frame_count += 1
 
-cap.release()
-cv2.destroyAllWindows()
-print("Done.")
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        elif key == ord('s'):
+            ts = np.datetime_as_string(np.datetime64('now'), unit='s').replace(':', '-')
+            os.makedirs("thermal_captures", exist_ok=True)
+            cv2.imwrite(f"thermal_captures/stream_{ts}.png", display)
+            print(f"Saved frame #{frame_count}")
+        elif key == ord('c'):
+            palette_idx = (palette_idx + 1) % len(palettes)
+            print(f"Palette: {palettes[palette_idx].name}")
+        elif key == ord('n'):
+            print("Triggering NUC calibration...")
+            cam.trigger_shutter()
+            print("Done.")
+except KeyboardInterrupt:
+    print("\nInterrupted.")
+except Exception as e:
+    print(f"Error: {type(e).__name__}: {e}")
+finally:
+    print("Stopping stream...")
+    cam.stop_stream()
+    print(f"Stream closed: is_streaming={cam.is_streaming}")
+    cv2.destroyAllWindows()
+
+print(f"Captured {frame_count} frames total.")

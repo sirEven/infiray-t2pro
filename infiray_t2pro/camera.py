@@ -3,6 +3,11 @@
 Clean architecture: the T2Pro class uses an injectable VideoBackend so all
 logic can be tested without hardware. The default V4L2Backend wraps OpenCV
 and v4l2-ctl for real camera access.
+
+Supports two modes:
+- Snapshot mode: capture() / capture_raw() — open, grab, close per call.
+- Streaming mode: start_stream() / read_frame() / stop_stream() — keep stream
+  open and read frames continuously.
 """
 
 import cv2
@@ -16,6 +21,21 @@ from datetime import datetime
 from .commands import Command
 from .palettes import Palette, apply_palette
 from .decode import decode_frame, extract_metadata, IMAGE_HEIGHT, TOTAL_ROWS, IMAGE_WIDTH
+
+
+class StreamClosedError(RuntimeError):
+    """Raised when trying to read a frame from a stream that is not open."""
+    pass
+
+
+class FrameReadError(RuntimeError):
+    """Raised when reading a frame from the backend fails mid-stream.
+
+    The original backend error is chained and accessible via __cause__.
+    After a FrameReadError, the stream is no longer active — the caller
+    must stop_stream() then start_stream() to reconnect.
+    """
+    pass
 
 
 class VideoBackend:
@@ -90,13 +110,105 @@ class T2Pro:
         self.nuc_calib: Optional[np.ndarray] = None
         self.palette = Palette.INFERNO
         self._frame_count = 0
+        self._is_streaming = False
+        self._stream_frame_count = 0
 
         # Auto-load NUC calibration if file exists
         if os.path.exists(nuc_calib_path):
             self.nuc_calib = np.load(nuc_calib_path)
 
+    # --- Streaming mode ---
+
+    @property
+    def is_streaming(self) -> bool:
+        """Whether the stream is currently open for continuous reading."""
+        return self._is_streaming
+
+    @property
+    def frame_count(self) -> int:
+        """Number of frames read since stream was started (excluding warmup)."""
+        return self._stream_frame_count
+
+    def start_stream(self, warmup: int = 5) -> None:
+        """Open the stream and warm up the camera.
+
+        After calling this, use read_frame() to grab frames continuously.
+        Call stop_stream() when done.
+
+        Args:
+            warmup: Number of frames to discard after opening. The T2 Pro's
+                    first frames can have unstable dynamic range.
+        """
+        if self._is_streaming:
+            raise RuntimeError("Already streaming. Call stop_stream() first.")
+        self._backend.open()
+        self._is_streaming = True
+        self._stream_frame_count = 0
+        # Discard warmup frames
+        for _ in range(warmup):
+            self._backend.read_raw()
+
+    def read_frame(self, apply_nuc: bool = True) -> np.ndarray:
+        """Read a single frame from the open stream.
+
+        Args:
+            apply_nuc: Whether to apply NUC correction (if calibration is loaded).
+                       The first frame after start_stream is always raw (no NUC)
+                       because it may have unstable dynamic range.
+
+        Returns:
+            2D float32 array (192×256) of thermal values.
+
+        Raises:
+            StreamClosedError: If stream is not open.
+        """
+        if not self._is_streaming:
+            raise StreamClosedError("Stream is not open. Call start_stream() first.")
+        try:
+            raw = self._backend.read_raw()
+        except Exception as e:
+            # Stream is broken — mark it dead so caller knows to reconnect.
+            self._is_streaming = False
+            raise FrameReadError(f"Failed to read frame: {e}") from e
+        frame = decode_frame(raw)
+        self._stream_frame_count += 1
+
+        if apply_nuc and self.nuc_calib is not None and self._stream_frame_count > 1:
+            frame = frame - self.nuc_calib.astype(np.float32)
+        return frame
+
+    def stop_stream(self) -> None:
+        """Close the stream. Safe to call multiple times."""
+        if self._is_streaming:
+            self._backend.close()
+            self._is_streaming = False
+
+    def stream(self, warmup: int = 5):
+        """Context manager for streaming mode.
+
+        Usage:
+            cam = T2Pro()
+            with cam.stream() as s:
+                for _ in range(100):
+                    frame = s.read_frame()
+        """
+        self.start_stream(warmup=warmup)
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.stop_stream()
+
+    # --- Snapshot mode (backward compatible) ---
+
     def capture_raw(self, n_frames: int = 1, trash: int = 5) -> np.ndarray:
-        """Capture raw 16-bit thermal frames without NUC correction."""
+        """Capture raw 16-bit thermal frames without NUC correction.
+
+        Opens the stream, captures, and closes. For continuous reading, use
+        start_stream() / read_frame() / stop_stream() instead.
+        """
         self._backend.open()
         for _ in range(trash):
             self._backend.read_raw()
@@ -113,6 +225,8 @@ class T2Pro:
 
         The first capture after init skips NUC correction because the first
         frame after opening the stream can have corrupted dynamic range.
+
+        For continuous reading, use start_stream() / read_frame() / stop_stream().
         """
         frame = self.capture_raw(n_frames=n_frames)
         self._frame_count += 1
@@ -120,6 +234,8 @@ class T2Pro:
         if apply_nuc and self.nuc_calib is not None and self._frame_count > 1:
             frame = frame - self.nuc_calib.astype(np.float32)
         return frame
+
+    # --- Commands ---
 
     def trigger_shutter(self):
         """Trigger the mechanical shutter for auto-calibration."""
@@ -136,6 +252,8 @@ class T2Pro:
         self._backend.set_zoom(int(Command.DEFAULT))
         time.sleep(1)
 
+    # --- Calibration ---
+
     def calibrate_nuc_manual(self, n_frames: int = 10) -> np.ndarray:
         """Capture a NUC calibration frame (cover lens first!)."""
         dark = self.capture_raw(n_frames=n_frames, trash=5)
@@ -150,6 +268,8 @@ class T2Pro:
         """Save NUC calibration to a .npy file."""
         np.save(path, self.nuc_calib)
 
+    # --- Metadata ---
+
     def capture_with_metadata(self) -> Tuple[np.ndarray, np.ndarray]:
         """Capture a frame and extract metadata rows."""
         self._backend.open()
@@ -160,6 +280,8 @@ class T2Pro:
         metadata = extract_metadata(raw)
         image = decode_frame(raw)
         return image, metadata
+
+    # --- Rendering ---
 
     def render(self, thermal: np.ndarray, palette: Optional[Palette] = None) -> np.ndarray:
         """Render thermal data as a colored BGR image."""
@@ -174,6 +296,8 @@ class T2Pro:
     def save_raw(self, thermal: np.ndarray, path: str):
         """Save raw 16-bit thermal data as a .npy file."""
         np.save(path, thermal.astype(np.uint16))
+
+    # --- Live preview ---
 
     def live_preview(self, use_first_frame: bool = False):
         """Show a live thermal preview window."""
