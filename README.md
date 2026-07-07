@@ -1,7 +1,7 @@
 # InfiRay T2 Pro — Python Driver
 
 A clean, well-tested Python driver for the InfiRay T2 Pro USB thermal camera.
-Designed for Linux. Built with TDD (212 tests, all passing).
+Designed for Linux. Built with TDD (231 tests, all passing).
 
 ## Install
 
@@ -42,6 +42,43 @@ print(snap)
 
 cam.stop_stream()
 ```
+
+## Session API (Recommended)
+
+For most use cases, `T2ProSession` wraps the entire pipeline — stream, AGC,
+denoise, temperature, recording, and snapshots — in a single context manager:
+
+```python
+from infiray_t2pro import T2Pro, T2ProSession
+
+cam = T2Pro()
+with T2ProSession(cam) as session:
+    for _ in range(100):
+        frame = session.read_frame()       # Decoded 192×256 float32
+        display = session.process(frame)    # AGC + denoise + palette → BGR image
+        result = session.read_temperature() # °C temperatures
+        print(f"Center: {result.center_temp:.1f}°C")
+
+    # Snapshot: PNG + .npy + JSON
+    snap = session.snapshot()
+
+    # Recording: raw frames + temps to disk
+    session.start_recording()
+    for _ in range(200):
+        session.read_frame()
+    metadata = session.stop_recording()
+
+# Stream auto-closes on exit. Recording auto-stops if active.
+```
+
+Key features:
+- Auto-loads `ThermometryLib` and creates `AgcAutoRange`
+- `process(frame)` applies FPN correction, denoise, AGC, palette, and upscale
+- `read_temperature()` reads raw frame + calculates temps in one call
+- `start_recording()` / `stop_recording()` manages `ThermalRecorder`
+- `snapshot()` saves complete deliverable (PNG + .npy + JSON)
+- `trigger_nuc()`, `reset_agc()`, `set_denoise()`, `set_palette()`, `set_scale()`
+- Recording auto-stops on context exit
 
 ## Streaming Mode
 
@@ -212,6 +249,7 @@ infiray_t2pro/
 ├── thermometry.py     — libthermometry.so wrapper, temperature calculation
 ├── snapshot.py        — take_snapshot() — PNG + .npy + JSON deliverables
 ├── recording.py       — ThermalRecorder — raw frames + temps to disk
+├── session.py         — T2ProSession — high-level pipeline context manager
 └── camera.py          — T2Pro class, VideoBackend, streaming, auto-NUC
 ```
 

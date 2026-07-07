@@ -6,6 +6,7 @@ from .decode import decode_frame, extract_metadata, IMAGE_HEIGHT, IMAGE_WIDTH, T
 from .processing import two_point_nuc, agc_linear, agc_percentile, correct_column_fpn, AgcAutoRange, denoise_thermal
 from .snapshot import take_snapshot, SnapshotResult
 from .recording import ThermalRecorder
+from .session import T2ProSession
 from .camera import T2Pro, VideoBackend, V4L2Backend, StreamClosedError, StreamOpenError, FrameReadError
 from .thermometry import (
     ThermometryLib, ThermometryLibNotFoundError,
@@ -23,6 +24,7 @@ __all__ = [
     "two_point_nuc", "agc_linear", "agc_percentile", "correct_column_fpn", "AgcAutoRange", "denoise_thermal",
     "take_snapshot", "SnapshotResult",
     "ThermalRecorder",
+    "T2ProSession",
     "T2Pro", "VideoBackend", "V4L2Backend", "StreamClosedError", "StreamOpenError", "FrameReadError",
     "ThermometryLib", "ThermometryLibNotFoundError",
     "TemperatureResult", "MetadataParams",
