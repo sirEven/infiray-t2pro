@@ -140,4 +140,4 @@ MIT — see [LICENSE](LICENSE)
 ## Credits
 
 - [julled/py_InfiRay_T2_Pro](https://github.com/julled/py_InfiRay_T2_Pro) — Original minimal T2 Pro driver, inspired the first-frame skip and auto-load NUC calibration patterns.
-- RMHansen (thermal imagery Discord) — Advice on two-point NUC, AGC, and 14-bit thermal data scaling.
+- RMHansen ([thermal imagery Discord](https://discord.gg/hBTStM9R9)) — Advice on two-point NUC, AGC, and 14-bit thermal data scaling.
