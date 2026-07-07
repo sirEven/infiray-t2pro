@@ -76,10 +76,12 @@ def _make_metadata_with_params(
     # Each row is 256 uint16 values (256 cols × 2 bytes = 512 bytes per row)
     flat_uint16 = meta.view(np.uint16).reshape(METADATA_ROWS * IMAGE_WIDTH)
 
-    # Write shutter temperature at offset amountPixels + 1
-    flat_uint16[256 + 1] = shut_temper
-    # Write core temperature at offset amountPixels + 2
-    flat_uint16[256 + 2] = core_temper
+    # T2 Pro stores shutter temp at Row 2, Col 35 (flat index 547)
+    # and core temp at Row 2, Col 89 (flat index 601)
+    _T2PRO_SHUT_FLAT = 2 * IMAGE_WIDTH + 35
+    _T2PRO_CORE_FLAT = 2 * IMAGE_WIDTH + 89
+    flat_uint16[_T2PRO_SHUT_FLAT] = shut_temper
+    flat_uint16[_T2PRO_CORE_FLAT] = core_temper
 
     # Write user parameters at offset 256 + 127 = 383
     # Each float takes 2 uint16 slots
@@ -491,8 +493,8 @@ class TestRealLibraryIntegration:
         four_line = np.zeros(4 * 256, dtype=np.uint16)
         # Write minimal metadata: shutter temp and core temp
         flat = four_line
-        flat[257] = 2982  # ~25°C shutter
-        flat[258] = 2982  # ~25°C core
+        flat[2 * 256 + 35] = 2982  # T2 Pro shutter at Row 2, Col 35
+        flat[2 * 256 + 89] = 2982  # T2 Pro core at Row 2, Col 89
 
         fpa_temp = tlib.thermometry_t4_line(
             width=256, height=196,
@@ -519,8 +521,8 @@ class TestRealLibraryIntegration:
         temp_table = np.zeros(16384, dtype=np.float32)
         four_line = np.zeros(4 * 256, dtype=np.uint16)
         flat = four_line
-        flat[257] = 2982
-        flat[258] = 2982
+        flat[2 * 256 + 35] = 2982  # T2 Pro shutter at Row 2, Col 35
+        flat[2 * 256 + 89] = 2982  # T2 Pro core at Row 2, Col 89
 
         fpa_temp = tlib.thermometry_t4_line(
             width=256, height=196,
@@ -539,7 +541,7 @@ class TestRealLibraryIntegration:
 
         org_data = np.random.randint(3000, 7000, size=(192, 256), dtype=np.uint16)
         result = tlib.thermometry_search(
-            width=256, height=196,
+            width=256, height=192,
             temp_table=temp_table,
             org_data=org_data,
             range_mode=120,

@@ -38,8 +38,8 @@ def _make_metadata_with_params(
     meta = np.zeros((METADATA_ROWS, IMAGE_WIDTH, 2), dtype=np.uint8)
     flat_uint16 = meta.view(np.uint16).reshape(METADATA_ROWS * IMAGE_WIDTH)
 
-    flat_uint16[256 + 1] = shut_temper
-    flat_uint16[256 + 2] = core_temper
+    flat_uint16[2 * IMAGE_WIDTH + 35] = shut_temper  # T2 Pro: Row 2, Col 35
+    flat_uint16[2 * IMAGE_WIDTH + 89] = core_temper  # T2 Pro: Row 2, Col 89
 
     offset = 256 + 127
     for val in [correction, reflection_temp, ambient_temp, humidity, emissivity]:

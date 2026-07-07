@@ -135,9 +135,8 @@ def parse_metadata_params(metadata: np.ndarray) -> MetadataParams:
     """Parse user parameters from the 4-row metadata section.
 
     The T2 Pro embeds correction, reflection temp, ambient temp, humidity,
-    emissivity, and distance in the metadata rows. These are stored as
-    uint16 (and float-as-uint16) values at specific offsets within the
-    fourLinePara array.
+    emissivity, and distance in Row 1 at offset 127+ (matching the SDK layout).
+    Shutter and core temperatures are at Row 2, Cols 35 and 89 (T2 Pro specific).
 
     Args:
         metadata: (4, 256, 2) uint8 array from extract_metadata().
@@ -148,15 +147,18 @@ def parse_metadata_params(metadata: np.ndarray) -> MetadataParams:
     # Flatten metadata to uint16 view
     flat_uint16 = metadata.view(np.uint16).reshape(METADATA_ROWS * IMAGE_WIDTH)
 
-    # Read shutter temperature (raw uint16, convert: value/10.0 - 273.15 → °C)
-    shut_temper_raw = int(flat_uint16[_AMOUNT_PIXELS + 1])
-    shutter_temp_c = shut_temper_raw / 10.0 - 273.15
+    # Read shutter temperature from T2 Pro specific offset (Row 2, Col 35)
+    # Convert: value/10.0 - 273.15 → °C
+    _T2PRO_SHUT_FLAT = 2 * IMAGE_WIDTH + 35
+    _T2PRO_CORE_FLAT = 2 * IMAGE_WIDTH + 89
+    shut_temper_raw = int(flat_uint16[_T2PRO_SHUT_FLAT])
+    shutter_temp_c = shut_temper_raw / 10.0 - 273.15 if shut_temper_raw != 0 else 0.0
 
-    # Read core/shell temperature
-    core_temper_raw = int(flat_uint16[_AMOUNT_PIXELS + 2])
-    core_temp_c = core_temper_raw / 10.0 - 273.15
+    # Read core/shell temperature from T2 Pro specific offset (Row 2, Col 89)
+    core_temper_raw = int(flat_uint16[_T2PRO_CORE_FLAT])
+    core_temp_c = core_temper_raw / 10.0 - 273.15 if core_temper_raw != 0 else 0.0
 
-    # Read user parameters starting at _USER_AREA_OFFSET
+    # Read user parameters starting at _USER_AREA_OFFSET (Row 1, Col 127)
     offset = _USER_AREA_OFFSET
     correction = float(_read_float_from_uint16(flat_uint16, offset))
     offset += 2
@@ -493,6 +495,22 @@ def calculate_temperature(
     four_line_para = metadata.view(np.uint16).reshape(METADATA_ROWS * IMAGE_WIDTH).copy()
     four_line_para = np.ascontiguousarray(four_line_para, dtype=np.uint16)
 
+    # 3b. Fix shutter/core temp offsets for T2 Pro.
+    # The SDK expects shut_temper at fourLinePara[amountPixels+1] and core_temper
+    # at fourLinePara[amountPixels+2] (amountPixels=256 for 256-wide cameras).
+    # The T2 Pro stores these at Row 2, Col 35 (shutter) and Col 89 (core)
+    # in the metadata. Patch the expected offsets so the C function reads them.
+    _AMOUNT_PIXELS_256 = 256
+    _SHUT_OFFSET = _AMOUNT_PIXELS_256 + 1  # 257
+    _CORE_OFFSET = _AMOUNT_PIXELS_256 + 2  # 258
+    _T2PRO_SHUT_FLAT = 2 * 256 + 35  # Row 2, Col 35 → flat index 547
+    _T2PRO_CORE_FLAT = 2 * 256 + 89  # Row 2, Col 89 → flat index 601
+
+    if four_line_para[_T2PRO_SHUT_FLAT] != 0:
+        four_line_para[_SHUT_OFFSET] = four_line_para[_T2PRO_SHUT_FLAT]
+    if four_line_para[_T2PRO_CORE_FLAT] != 0:
+        four_line_para[_CORE_OFFSET] = four_line_para[_T2PRO_CORE_FLAT]
+
     # 4. Build temperature table
     temp_table = np.zeros(TEMP_TABLE_SIZE, dtype=np.float32)
 
@@ -513,12 +531,13 @@ def calculate_temperature(
         range_mode=range_mode,
     )
 
-    # 5. Get the thermal data (without metadata) as uint16
-    from .decode import decode_frame
-    thermal_2d = decode_frame(raw_frame)
-    # Convert to uint16 for the C function
-    org_data = np.clip(thermal_2d, 0, 16383).astype(np.uint16)
-    org_data = np.ascontiguousarray(org_data)
+    # 5. Get the full raw frame as uint16 (including metadata rows).
+    # thermometrySearch needs the full orgData buffer but height must be
+    # IMAGE_HEIGHT (192, thermal only) — NOT TOTAL_ROWS (196). Including
+    # metadata rows in the height parameter causes the C function to produce
+    # incorrect stats (all -273°C).
+    org_data = raw_frame.view(np.uint16).reshape(TOTAL_ROWS * IMAGE_WIDTH).copy()
+    org_data = np.ascontiguousarray(org_data, dtype=np.uint16)
 
     # 6. Compute temperatures using mode 4 (full frame + stats)
     temp_data = tlib.thermometry_search(
