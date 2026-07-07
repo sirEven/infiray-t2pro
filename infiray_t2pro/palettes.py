@@ -46,6 +46,7 @@ def apply_palette(
     thermal: np.ndarray,
     palette: Palette = Palette.INFERNO,
     scale: int = 5,
+    agc=None,
 ) -> np.ndarray:
     """Apply a color palette to 16-bit thermal data.
 
@@ -53,13 +54,18 @@ def apply_palette(
         thermal: 2D array of thermal values (typically 192x256).
         palette: Color palette to apply.
         scale: Upscale factor (5 = 1280x960 default). Use 3 for smaller, 8 for larger.
+        agc: AgcAutoRange instance for temporally-smooth contrast. If None,
+             uses per-frame cv2.normalize (causes flicker and detail loss).
 
     Returns:
         BGR image (H*scale x W*scale x 3, uint8), upscaled for display.
     """
-    normalized = cv2.normalize(
-        thermal.astype(np.float32), None, 0, 255, cv2.NORM_MINMAX
-    ).astype(np.uint8)
+    if agc is not None:
+        normalized = agc.apply(thermal)
+    else:
+        normalized = cv2.normalize(
+            thermal.astype(np.float32), None, 0, 255, cv2.NORM_MINMAX
+        ).astype(np.uint8)
 
     if palette == Palette.WHITE_HOT:
         # Hot = white, cold = black (standard thermal)

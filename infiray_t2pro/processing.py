@@ -24,7 +24,7 @@ def two_point_nuc(
     """Apply two-point NUC correction using dark and bright reference frames.
 
     Args:
-        raw: Raw thermal frame (192×256, float32).
+        raw: Raw thermal frame (192x256, float32).
         dark: Dark reference frame captured with lens covered (same shape).
         bright: Bright reference frame of a uniform hot scene (same shape).
         target_range: If set, scale the output so the mean response equals this value.
@@ -140,6 +140,90 @@ def agc_percentile(
     return agc_img.astype(np.uint8)
 
 
+class AgcAutoRange:
+    """Slowly-adapting AGC that maintains temporal consistency.
+
+    Instead of per-frame min/max normalization (which causes flicker and
+    destroys fine detail), this class tracks a slowly-adapting range that
+    smooths out frame-to-frame variation. The range adapts toward the
+    current frame's percentile range with a configurable speed.
+
+    This is how professional thermal cameras and the InfiRay phone app
+    handle contrast — the range doesn't jump around per frame, so fine
+    temperature differences at distance are preserved.
+
+    Usage:
+        agc = AgcAutoRange()
+        for frame in frames:
+            display_8bit = agc.apply(frame)
+    """
+
+    def __init__(
+        self,
+        low_percentile: float = 1.0,
+        high_percentile: float = 99.0,
+        adapt_speed: float = 0.05,
+        min_range: float = 100.0,
+    ):
+        """Initialize AGC with smoothing parameters.
+
+        Args:
+            low_percentile: Lower clip percentile for each frame.
+            high_percentile: Upper clip percentile for each frame.
+            adapt_speed: How fast the range adapts (0.0 = frozen, 1.0 = instant).
+                         0.05 means 5% per frame — very smooth, no flicker.
+            min_range: Minimum allowed range in pixel values. Prevents
+                       over-amplification of nearly-uniform scenes.
+        """
+        self.low_percentile = low_percentile
+        self.high_percentile = high_percentile
+        self.adapt_speed = adapt_speed
+        self.min_range = min_range
+        self._lo: Optional[float] = None
+        self._hi: Optional[float] = None
+
+    def reset(self):
+        """Reset the tracked range so next frame initializes fresh."""
+        self._lo = None
+        self._hi = None
+
+    def apply(self, thermal: np.ndarray) -> np.ndarray:
+        """Apply temporally-smooth AGC to a thermal frame.
+
+        Args:
+            thermal: 2D thermal data (float32 or uint16).
+
+        Returns:
+            uint8 array scaled to 0-255 with smooth temporal adaptation.
+        """
+        thermal = thermal.astype(np.float32)
+        lo = np.percentile(thermal, self.low_percentile)
+        hi = np.percentile(thermal, self.high_percentile)
+
+        if self._lo is None:
+            # First frame: initialize range
+            self._lo = lo
+            self._hi = hi
+        else:
+            # Smoothly adapt toward current frame's range
+            self._lo += self.adapt_speed * (lo - self._lo)
+            self._hi += self.adapt_speed * (hi - self._hi)
+
+        # Enforce minimum range to avoid over-amplification
+        if self._hi - self._lo < self.min_range:
+            mid = (self._hi + self._lo) / 2.0
+            self._lo = mid - self.min_range / 2.0
+            self._hi = mid + self.min_range / 2.0
+
+        # Map to 0-255
+        if self._hi == self._lo:
+            return np.full(thermal.shape, 128, dtype=np.uint8)
+
+        clipped = np.clip(thermal, self._lo, self._hi)
+        normalized = (clipped - self._lo) / (self._hi - self._lo) * 255.0
+        return normalized.astype(np.uint8)
+
+
 def correct_column_fpn(thermal: np.ndarray) -> np.ndarray:
     """Remove column-wise Fixed Pattern Noise (vertical stripes).
 
@@ -148,7 +232,7 @@ def correct_column_fpn(thermal: np.ndarray) -> np.ndarray:
     while preserving horizontal temperature gradients.
 
     Args:
-        thermal: Input thermal data (192×256, float32).
+        thermal: Input thermal data (192x256, float32).
 
     Returns:
         Column-FPN-corrected thermal data (same shape).

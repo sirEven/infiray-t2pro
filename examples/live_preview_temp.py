@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Live preview with temperature readout.
+"""Live preview with temperature readout and smooth AGC.
 
 Shows the thermal camera feed with real-time temperature overlay
 (center, max, min, avg) calculated from libthermometry.so.
+
+Uses AgcAutoRange for temporally-smooth contrast instead of per-frame
+normalization. This preserves fine detail at distance and eliminates
+the pixelation/flicker that per-frame normalize causes.
 
 Controls:
     q - quit
@@ -10,6 +14,8 @@ Controls:
     c - cycle color palette
     +/- - zoom in/out (change upscale factor)
     n - trigger NUC calibration (cover lens first!)
+    a - toggle AGC mode (smooth vs per-frame)
+    r - reset AGC range (use if image looks washed out)
 """
 
 import numpy as np
@@ -21,7 +27,7 @@ import time
 from infiray_t2pro import T2Pro, Palette
 from infiray_t2pro.thermometry import ThermometryLib, calculate_temperature
 from infiray_t2pro.palettes import PALETTE_NAMES, apply_palette
-from infiray_t2pro.processing import correct_column_fpn
+from infiray_t2pro.processing import AgcAutoRange, correct_column_fpn
 
 # Load dark reference if available
 dark_path = os.path.join(
@@ -45,10 +51,19 @@ print(f"Stream open: is_streaming={cam.is_streaming}")
 
 tlib = ThermometryLib()
 
+# Smooth AGC — adapts slowly, no per-frame flicker
+agc = AgcAutoRange(
+    low_percentile=0.5,
+    high_percentile=99.5,
+    adapt_speed=0.08,
+    min_range=80.0,
+)
+
 # All available palettes — cycle with 'c'
 palettes = list(Palette)
 palette_idx = 0
 scale = 5  # 5x upscale = 1280x960 display
+use_smooth_agc = True
 
 cv2.namedWindow("T2 Pro - Thermal + Temperature", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("T2 Pro - Thermal + Temperature", 1280, 960)
@@ -62,7 +77,10 @@ try:
         frame = cam.read_frame()
         corrected = correct_column_fpn(frame) if dark is not None else frame
 
-        display = apply_palette(corrected, palettes[palette_idx], scale=scale)
+        display = apply_palette(
+            corrected, palettes[palette_idx], scale=scale,
+            agc=agc if use_smooth_agc else None,
+        )
 
         # Temperature readout — update every 0.5s
         now = time.time()
@@ -73,7 +91,7 @@ try:
                 last_result = result
                 last_temp_time = now
             except Exception:
-                pass
+                pass  # Keep last reading on error
 
         # Overlay
         if last_result is not None:
@@ -99,9 +117,10 @@ try:
                         cv2.FONT_HERSHEY_SIMPLEX, 1.3, (0, 255, 0), 3,
                         cv2.LINE_AA)
 
-        # Palette name bottom-left
+        # Status bar
+        agc_mode = "smooth" if use_smooth_agc else "per-frame"
         pal_name = PALETTE_NAMES.get(palettes[palette_idx], str(palettes[palette_idx]))
-        cv2.putText(display, f"{pal_name}  |  q=quit s=save c=palette n=NUC +/-=zoom",
+        cv2.putText(display, f"{pal_name}  AGC:{agc_mode}  |  q=quit s=save c=palette n=NUC a=AGC r=reset +/-=zoom",
                     (10, display.shape[0] - 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1,
                     cv2.LINE_AA)
@@ -125,12 +144,20 @@ try:
             print("Triggering NUC calibration...")
             cam.trigger_shutter()
             print("Done.")
+        elif key == ord('a'):
+            use_smooth_agc = not use_smooth_agc
+            if not use_smooth_agc:
+                agc.reset()
+            print(f"AGC: {'smooth (temporal)' if use_smooth_agc else 'per-frame (legacy)'}")
         elif key in (ord('+'), ord('=')):
             scale = min(scale + 1, 8)
             print(f"Scale: {scale}x ({256*scale}x{192*scale})")
         elif key == ord('-'):
             scale = max(scale - 1, 2)
             print(f"Scale: {scale}x ({256*scale}x{192*scale})")
+        elif key == ord('r'):
+            agc.reset()
+            print("AGC range reset.")
 
 except KeyboardInterrupt:
     print("\nInterrupted.")
