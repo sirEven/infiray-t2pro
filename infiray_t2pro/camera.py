@@ -21,6 +21,11 @@ from datetime import datetime
 from .commands import Command
 from .palettes import Palette, apply_palette
 from .decode import decode_frame, extract_metadata, IMAGE_HEIGHT, TOTAL_ROWS, IMAGE_WIDTH
+from .thermometry import (
+    ThermometryLib, ThermometryLibNotFoundError,
+    calculate_temperature as _calc_temp,
+    CAMERA_LENS_13, RANGE_MODE_120,
+)
 
 
 class StreamClosedError(RuntimeError):
@@ -122,6 +127,7 @@ class T2Pro:
         self._frame_count = 0
         self._is_streaming = False
         self._stream_frame_count = 0
+        self._tlib: Optional[ThermometryLib] = None
 
         # Auto-load NUC calibration if file exists
         if os.path.exists(nuc_calib_path):
@@ -213,6 +219,69 @@ class T2Pro:
         if apply_nuc and self.nuc_calib is not None and self._stream_frame_count > 1:
             frame = frame - self.nuc_calib.astype(np.float32)
         return frame
+
+    def read_frame_raw(self) -> np.ndarray:
+        """Read a raw frame from the open stream (196×256×2, uint8).
+
+        Use this when you need the raw frame data including metadata rows,
+        e.g. for temperature calculation.
+
+        Raises:
+            StreamClosedError: If stream is not open.
+            FrameReadError: If the backend fails.
+        """
+        if not self._is_streaming:
+            raise StreamClosedError("Stream is not open. Call start_stream() first.")
+        try:
+            raw = self._backend.read_raw()
+        except Exception as e:
+            self._is_streaming = False
+            raise FrameReadError(f"Failed to read raw frame: {e}") from e
+        self._stream_frame_count += 1
+        return raw
+
+    def calculate_temperature(
+        self,
+        tlib: Optional[ThermometryLib] = None,
+        camera_lens: int = CAMERA_LENS_13,
+        range_mode: int = RANGE_MODE_120,
+        shutter_fix: float = 0.0,
+    ):
+        """Calculate temperature from the next frame in the stream.
+
+        Reads a raw frame, extracts metadata, and converts pixel values to °C
+        using libthermometry.so. Requires an active stream (start_stream first).
+
+        Args:
+            tlib: ThermometryLib instance. If None, auto-loads the bundled
+                  library for the current platform.
+            camera_lens: Lens type (CAMERA_LENS_13=130 default, CAMERA_LENS_6_8=68).
+            range_mode: Temperature range (RANGE_MODE_120 or RANGE_MODE_400).
+            shutter_fix: Shutter correction value (default 0.0).
+
+        Returns:
+            TemperatureResult with center/max/min/avg temps and metadata.
+
+        Raises:
+            StreamClosedError: If stream is not open.
+            FrameReadError: If the backend fails or frame is corrupt.
+            ThermometryLibNotFoundError: If libthermometry.so can't be loaded.
+        """
+        if not self._is_streaming:
+            raise StreamClosedError("Stream is not open. Call start_stream() first.")
+
+        if tlib is None:
+            if self._tlib is None:
+                self._tlib = ThermometryLib()
+            tlib = self._tlib
+
+        raw = self.read_frame_raw()
+        return _calc_temp(
+            tlib, raw,
+            camera_lens=camera_lens,
+            range_mode=range_mode,
+            shutter_fix=shutter_fix,
+        )
 
     def stop_stream(self) -> None:
         """Close the stream. Safe to call multiple times."""
