@@ -15,6 +15,7 @@ Controls:
     +/- - zoom in/out (change upscale factor)
     n - trigger NUC calibration (cover lens first!)
     a - toggle AGC mode (smooth vs per-frame)
+    d - toggle denoise (bilateral filter on/off)
     r - reset AGC range (use if image looks washed out)
 """
 
@@ -27,7 +28,7 @@ import time
 from infiray_t2pro import T2Pro, Palette
 from infiray_t2pro.thermometry import ThermometryLib, calculate_temperature
 from infiray_t2pro.palettes import PALETTE_NAMES, apply_palette
-from infiray_t2pro.processing import AgcAutoRange, correct_column_fpn
+from infiray_t2pro.processing import AgcAutoRange, correct_column_fpn, denoise_thermal
 
 # Load dark reference if available
 dark_path = os.path.join(
@@ -64,6 +65,7 @@ palettes = list(Palette)
 palette_idx = 0
 scale = 5  # 5x upscale = 1280x960 display
 use_smooth_agc = True
+use_denoise = True
 
 cv2.namedWindow("T2 Pro - Thermal + Temperature", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("T2 Pro - Thermal + Temperature", 1280, 960)
@@ -76,9 +78,10 @@ try:
     while True:
         frame = cam.read_frame()
         corrected = correct_column_fpn(frame) if dark is not None else frame
+        denoised = denoise_thermal(corrected) if use_denoise else corrected
 
         display = apply_palette(
-            corrected, palettes[palette_idx], scale=scale,
+            denoised, palettes[palette_idx], scale=scale,
             agc=agc if use_smooth_agc else None,
         )
 
@@ -119,8 +122,9 @@ try:
 
         # Status bar
         agc_mode = "smooth" if use_smooth_agc else "per-frame"
+        denoise_str = "on" if use_denoise else "off"
         pal_name = PALETTE_NAMES.get(palettes[palette_idx], str(palettes[palette_idx]))
-        cv2.putText(display, f"{pal_name}  AGC:{agc_mode}  |  q=quit s=save c=palette n=NUC a=AGC r=reset +/-=zoom",
+        cv2.putText(display, f"{pal_name}  AGC:{agc_mode}  DNR:{denoise_str}  |  q=quit s=save c=palette n=NUC a=AGC d=DNR r=reset +/-=zoom",
                     (10, display.shape[0] - 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1,
                     cv2.LINE_AA)
@@ -149,6 +153,9 @@ try:
             if not use_smooth_agc:
                 agc.reset()
             print(f"AGC: {'smooth (temporal)' if use_smooth_agc else 'per-frame (legacy)'}")
+        elif key == ord('d'):
+            use_denoise = not use_denoise
+            print(f"Denoise: {'on (bilateral filter)' if use_denoise else 'off (raw)'}")
         elif key in (ord('+'), ord('=')):
             scale = min(scale + 1, 8)
             print(f"Scale: {scale}x ({256*scale}x{192*scale})")

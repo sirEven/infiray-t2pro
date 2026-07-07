@@ -12,6 +12,7 @@ and gain non-uniformity.
 """
 
 import numpy as np
+import cv2
 from typing import Optional
 
 
@@ -245,3 +246,36 @@ def correct_column_fpn(thermal: np.ndarray) -> np.ndarray:
     col_offsets = col_means - global_mean
 
     return thermal - col_offsets
+
+
+def denoise_thermal(
+    thermal: np.ndarray,
+    spatial_sigma: float = 1.5,
+    range_sigma: float = 15.0,
+) -> np.ndarray:
+    """Bilateral filter for thermal images — smooths noise, preserves edges.
+
+    The T2 Pro's 256x192 microbolometer has significant pixel-to-pixel noise
+    that looks blocky at distance. A bilateral filter smooths this noise within
+    uniform temperature regions while keeping sharp boundaries between objects
+    at different temperatures.
+
+    This is what the phone app does internally — it's why the phone image
+    looks smooth at distance while our raw display looked pixelated.
+
+    Args:
+        thermal: Input thermal data (192x256, float32 or uint16).
+        spatial_sigma: Spatial kernel size in pixels (sigma for Gaussian
+                       spatial window). Larger = wider smoothing. 1.5 is a
+                       good default for 256x192 — enough to smooth noise
+                       without blurring edges.
+        range_sigma: Range sigma in pixel value units. Controls how much
+                     adjacent pixels are considered "similar enough" to
+                     average together. Lower = preserves finer edges but
+                     smooths less. 15 is good for the ~3000-8000 range.
+
+    Returns:
+        Denoised thermal data (same shape, float32).
+    """
+    thermal_f32 = thermal.astype(np.float32)
+    return cv2.bilateralFilter(thermal_f32, d=0, sigmaColor=range_sigma, sigmaSpace=spatial_sigma)
