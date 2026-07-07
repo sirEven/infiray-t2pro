@@ -1,7 +1,7 @@
 # InfiRay T2 Pro — Python Driver
 
 A clean, well-tested Python driver for the InfiRay T2 Pro USB thermal camera.
-Designed for Linux. Built with TDD (66 tests, all passing).
+Designed for Linux. Built with TDD (189 tests, all passing).
 
 ## Install
 
@@ -15,72 +15,204 @@ pip install -e .
 
 ```python
 from infiray_t2pro import T2Pro, Palette
+from infiray_t2pro.thermometry import ThermometryLib, calculate_temperature
+from infiray_t2pro.snapshot import take_snapshot
 
-# Capture a single frame
+# Live preview with temperature overlay
+# Press 's' to take a snapshot, 'q' to quit
 cam = T2Pro()
-frame = cam.capture()
-cam.save(frame, "thermal.png")
+cam.start_stream(warmup=10, auto_nuc=120)  # Auto-NUC every 2 min
 
-# Live preview (press 'q' to quit, 's' to save, 'c' to change colormap)
-cam.live_preview()
+# Read frames during streaming
+frame = cam.read_frame()
 
-# NUC calibration (cover the lens first!)
-cam.calibrate_nuc_manual()
-cam.save_nuc_calibration("my_calib.npy")
+# Calculate temperatures from a raw frame
+tlib = ThermometryLib()
+raw = cam.read_frame_raw()
+result = calculate_temperature(tlib, raw)
+print(f"Center: {result.center_temp:.1f}°C  Max: {result.max_temp:.1f}°C")
 
-# Later: load calibration and capture corrected frames
-cam.load_nuc_calibration("my_calib.npy")
-corrected = cam.capture()  # NUC correction applied automatically
+# Take a complete snapshot (PNG + .npy + JSON metadata)
+snap = take_snapshot(cam, tlib=tlib, output_dir="snapshots")
+print(snap)
+# Snapshot: 2026-07-07_21-48-53
+#   Center: 27.8°C  Max: 30.7°C  Min: 21.1°C  Avg: 29.2°C
+#   FPA: 34.1°C
+#   Files: snapshots/2026-07-07_21-48-53
+
+cam.stop_stream()
 ```
+
+## Streaming Mode
+
+The driver supports continuous streaming with context manager or explicit start/stop:
+
+```python
+# Context manager (auto-cleanup)
+with cam.stream(warmup=10, auto_nuc=120) as s:
+    for _ in range(100):
+        frame = s.read_frame()
+
+# Or manual start/stop
+cam.start_stream(warmup=10, auto_nuc=120)
+try:
+    frame = cam.read_frame()
+finally:
+    cam.stop_stream()
+```
+
+**Auto-NUC:** `auto_nuc=120` triggers a shutter calibration every 120 seconds
+during streaming. Essential for unattended drone operations. Set `auto_nuc=None`
+(the default) to disable.
+
+## Temperature Calculation
+
+Bundled `libthermometry.so` (official InfiRay Xtherm Linux SDK V6.15) provides
+accurate temperature calculation from raw 14-bit thermal data. Ships for both
+x86_64 (dev machines) and aarch64 (Raspberry Pi 4/5).
+
+```python
+from infiray_t2pro.thermometry import ThermometryLib, calculate_temperature
+
+tlib = ThermometryLib()  # Auto-detects platform
+raw = cam.read_frame_raw()
+result = calculate_temperature(tlib, raw)
+
+# TemperatureResult fields:
+# center_temp, max_temp, max_x, max_y,
+# min_temp, min_x, min_y, avg_temp,
+# fpa_temp, correction, reflection_temp,
+# ambient_temp, humidity, emissivity, distance, shutter_temp_c
+```
+
+**Important:** T2 Pro metadata offsets differ from the SDK defaults. The driver
+patches `shutter_temp` at `flat[547]` and `core_temp` at `flat[601]` before
+calling the C functions. `thermometrySearch` must use `height=192` (sensor only),
+not 196 (total rows).
+
+## Snapshot Mode
+
+```python
+from infiray_t2pro.snapshot import take_snapshot
+
+# During streaming — saves PNG + .npy + JSON
+snap = take_snapshot(cam, tlib=tlib, output_dir="snapshots")
+
+# Or with pre-calculated temperatures
+snap = take_snapshot(cam, temp_result=result, output_dir="snapshots")
+
+# Each snapshot creates a timestamped directory:
+# snapshots/2026-07-07_21-48-53/
+# ├── thermal_2026-07-07_21-48-53.png   # Rendered image with temp overlay
+# ├── raw_2026-07-07_21-48-53.npy       # Raw frame data for re-processing
+# └── metadata_2026-07-07_21-48-53.json # Full temperature + parameter metadata
+```
+
+JSON metadata includes: center/max/min/avg/FPA temperatures, emissivity, distance,
+humidity, correction, reflection temp, ambient temp, file references.
+
+## Image Processing
+
+### Smooth AGC (Adaptive Gain Control)
+
+Per-frame `cv2.normalize(NORM_MINMAX)` amplifies noise at distance — each frame
+stretches its own min/max independently, causing pixelation and flicker. The
+driver uses `AgcAutoRange` instead: temporal adaptation at 8% per frame.
+
+```python
+from infiray_t2pro.processing import AgcAutoRange
+
+agc = AgcAutoRange(low_percentile=0.5, high_percentile=99.5, adapt_speed=0.08)
+normalized = agc.update(frame)  # Adapts range smoothly over time
+```
+
+### Bilateral Filter Denoising
+
+Edge-preserving spatial noise reduction for cleaner thermal images:
+
+```python
+from infiray_t2pro.processing import denoise_thermal
+
+denoised = denoise_thermal(frame, spatial_sigma=1.5, range_sigma=15.0)
+```
+
+### Full Processing Pipeline
+
+```python
+from infiray_t2pro.processing import AgcAutoRange, correct_column_fpn, denoise_thermal
+from infiray_t2pro.palettes import apply_palette, Palette
+
+agc = AgcAutoRange(adapt_speed=0.08)
+
+frame = cam.read_frame()
+corrected = correct_column_fpn(frame)  # Remove vertical stripes
+denoised = denoise_thermal(corrected)   # Edge-preserving denoise
+rendered = apply_palette(denoised, Palette.INFERNO, scale=5, agc=agc)
+```
+
+## Palettes
+
+11 built-in palettes:
+
+| Palette | Description |
+|---------|-------------|
+| `INFERNO` | Perceptually uniform, dark-to-bright (default) |
+| `JET` | Classic rainbow thermal |
+| `TURBO` | Improved rainbow, better perceptual uniformity |
+| `HOT` | Black-red-yellow-white |
+| `CIVIDIS` | Color-vision deficiency friendly |
+| `VIRIDIS` | Perceptually uniform, blue-green-yellow |
+| `PLASMA` | Purple-pink-yellow |
+| `MAGMA` | Dark purple-orange-yellow |
+| `WINTER` | Blue-green |
+| `WHITE_HOT` | Grayscale, bright = hot |
+| `BLACK_HOT` | Grayscale, bright = cold |
+
+Default upscale: 5× (1280×960 from 256×192 sensor).
 
 ## Architecture
 
 ```
 infiray_t2pro/
-├── __init__.py      — Public API
-├── commands.py      — Vendor command enum + packing logic
-├── palettes.py      — Color palette enum + rendering
-├── decode.py        — Raw YUYV frame decoding (16-bit thermal extraction)
-├── processing.py    — Two-point NUC, AGC, column FPN correction
-└── camera.py        — T2Pro class + injectable VideoBackend
+├── __init__.py        — Public API
+├── commands.py        — Vendor command enum + packing logic
+├── decode.py          — Raw YUYV frame decoding (16-bit thermal extraction)
+├── processing.py      — AgcAutoRange, bilateral denoise, column FPN correction
+├── palettes.py        — 11 color palettes + apply_palette with AGC support
+├── thermometry.py     — libthermometry.so wrapper, temperature calculation
+├── snapshot.py        — take_snapshot() — PNG + .npy + JSON deliverables
+└── camera.py          — T2Pro class, VideoBackend, streaming, auto-NUC
 ```
 
-The `VideoBackend` abstract class enables testing without hardware.
-`V4L2Backend` is the default real implementation. Inject a `FakeVideoBackend`
-in tests or use a custom backend for different hardware.
+`VideoBackend` abstract class enables testing without hardware.
+`V4L2Backend` is the default real implementation.
 
-## Image Processing
+## Live Preview Controls
 
-Raw T2 Pro images have per-pixel offset and gain variation (visible as vertical
-stripes). The `processing` module provides three correction functions:
+`examples/live_preview_temp.py` — full-featured live viewer:
 
-```python
-from infiray_t2pro.processing import two_point_nuc, agc_percentile, correct_column_fpn
-
-# Two-point NUC: correct per-pixel offset AND gain
-corrected = two_point_nuc(raw_frame, dark_ref, bright_ref)
-
-# Column FPN: remove remaining vertical stripes
-corrected = correct_column_fpn(corrected)
-
-# Percentile-based AGC: best contrast, clips outlier pixels
-rendered = agc_percentile(corrected, low_percentile=1, high_percentile=99)
-```
-
-**Two-point NUC** requires two reference frames:
-1. **Dark reference**: captured with lens covered (per-pixel offsets)
-2. **Bright reference**: captured pointing at a uniform warm surface (per-pixel gains)
-
-See `examples/two_point_nuc.py` for the full workflow.
+| Key | Action |
+|-----|--------|
+| `q` | Quit |
+| `s` | Take snapshot (PNG + .npy + JSON) |
+| `c` | Cycle color palette (11 palettes) |
+| `n` | Trigger NUC calibration (cover lens first!) |
+| `a` | Toggle AGC mode (smooth vs per-frame) |
+| `d` | Toggle bilateral denoise |
+| `r` | Reset AGC range |
+| `+`/`-` | Zoom in/out (upscale factor) |
 
 ## Examples
 
-- `examples/capture_single.py` — Capture and save one frame
-- `examples/live_preview.py` — Live thermal video feed
-- `examples/nuc_calibration.py` — NUC calibration workflow
-- `examples/extract_metadata.py` — Capture with metadata row extraction
-- `examples/two_point_nuc.py` — Two-point NUC for high-quality images (removes stripes + FPN)
-- `examples/live_preview_nuc.py` — Live preview with NUC + FPN correction (use for manual focus)
+| Example | Description |
+|---------|-------------|
+| `live_preview_temp.py` | Full live viewer with temperature overlay, AGC, denoise, snapshots |
+| `capture_single.py` | Capture and save one frame |
+| `live_preview.py` | Basic live thermal video feed |
+| `nuc_calibration.py` | NUC calibration workflow |
+| `extract_metadata.py` | Capture with metadata row extraction |
+| `two_point_nuc.py` | Two-point NUC for high-quality images |
+| `live_preview_nuc.py` | Live preview with NUC + FPN correction |
 
 ## Tests
 
@@ -88,48 +220,52 @@ See `examples/two_point_nuc.py` for the full workflow.
 pytest tests/ -v
 ```
 
-66 tests covering: command packing, palette rendering, frame decoding,
-NUC calibration, first-frame skip, auto-load calibration, two-point NUC,
-AGC (linear + percentile), column FPN correction, and camera logic
-(with mock hardware).
+189 tests covering: command packing, palette rendering (11 palettes, 5× upscale),
+frame decoding, streaming, error hierarchy, frame validation, NUC calibration,
+two-point NUC, AGC (linear, percentile, temporal), column FPN correction,
+bilateral denoising, thermometry (temperature calculation, metadata offsets,
+T2 Pro patches), auto-NUC, snapshot mode, and camera logic (with mock hardware).
 
 ## Requirements
 
 - Linux with UVC support (uvcvideo kernel module)
 - OpenCV (`pip install opencv-python`)
+- NumPy
 - v4l-utils (`v4l2-ctl` command)
-- Optional: pyusb for UVC control transfers
 
 ## Camera Specs
 
 | Spec | Value |
-|---|---|
+|------|-------|
 | Sensor | 256×192 thermal (16-bit) |
 | Frame rate | 25 fps |
 | Focus | Manual (rotate lens enclosure by hand) |
 | USB | UVC, VID:PID 04b4:0100 (Cypress bridge) |
 | Format | YUYV 4:2:2, 196×256×2 bytes (192 image + 4 metadata rows) |
-| Temperature range | -20°C to 120°C (high gain) / -20°C to 400°C (low gain) |
+| Temperature range | −20°C to 120°C (high gain) / −20°C to 400°C (low gain) |
+| Thermometry | Bundled libthermometry.so (x86_64 + aarch64) |
 
-## Status: Alpha
+## Status
 
 **Working:**
 - ✅ Raw frame capture (256×192, 25fps, 16-bit)
-- ✅ Live preview with multiple color palettes
+- ✅ Live preview with 11 color palettes
+- ✅ Temperature calculation (°C) from bundled libthermometry.so
+- ✅ Smooth temporal AGC — eliminates pixelation/flicker at distance
+- ✅ Bilateral filter denoising — edge-preserving noise reduction
+- ✅ 5× LANCZOS4 upscale (1280×960 display)
+- ✅ Auto-NUC — periodic shutter calibration during streaming
+- ✅ Snapshot mode — PNG + raw numpy + JSON metadata deliverables
 - ✅ NUC calibration (manual dark frame subtraction)
-- ✅ Auto-load NUC calibration from file on init
-- ✅ First-frame skip (first frame after stream open can have corrupted dynamic range)
 - ✅ Two-point NUC correction (per-pixel offset + gain)
 - ✅ Column FPN removal (vertical stripe correction)
-- ✅ Percentile-based AGC (outlier-resistant contrast stretching)
-- ✅ Live preview with NUC + FPN correction (use for manual focus tuning)
-- ✅ Vendor commands: shutter trigger, palette switching, gain selection
-- ✅ Metadata row extraction (4 rows per frame)
+- ✅ Streaming mode with context manager
+- ✅ Metadata row extraction and parameter parsing
 
 **Not yet implemented:**
-- ⚠️ Temperature reading (°C) — requires thermometry calibration
-- ⚠️ Automatic NUC via mechanical shutter (shutter triggers but auto-reopens too fast to capture)
-- ⚠️ Gain switching (0x8020/0x8021) can destabilize the camera — needs more work
+- ⬜ Thermal video recording (raw frames + temp stream to disk)
+- ⬜ RPi deployment test (aarch64 lib works on actual Pi)
+- ⬜ MAVLink/ArduPilot telemetry bridge for drone integration
 
 **Tested on:** InfiRay T2 Pro (single unit), Arch Linux, x86_64
 
