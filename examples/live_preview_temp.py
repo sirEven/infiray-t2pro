@@ -11,12 +11,13 @@ the pixelation/flicker that per-frame normalize causes.
 Controls:
     q - quit
     s - take snapshot (PNG + .npy + JSON metadata)
+    r - start/stop recording (raw frames + temperatures)
     c - cycle color palette
     +/- - zoom in/out (change upscale factor)
     n - trigger NUC calibration (cover lens first!)
     a - toggle AGC mode (smooth vs per-frame)
     d - toggle denoise (bilateral filter on/off)
-    r - reset AGC range (use if image looks washed out)
+    e - reset AGC range (use if image looks washed out)
 """
 
 import numpy as np
@@ -30,6 +31,7 @@ from infiray_t2pro.thermometry import ThermometryLib, calculate_temperature
 from infiray_t2pro.palettes import PALETTE_NAMES, apply_palette
 from infiray_t2pro.processing import AgcAutoRange, correct_column_fpn, denoise_thermal
 from infiray_t2pro.snapshot import take_snapshot
+from infiray_t2pro.recording import ThermalRecorder
 
 # Load dark reference if available
 dark_path = os.path.join(
@@ -74,6 +76,7 @@ cv2.resizeWindow("T2 Pro - Thermal + Temperature", 1280, 960)
 frame_count = 0
 last_result = None
 last_temp_time = 0
+recorder = None  # ThermalRecorder when active
 
 try:
     while True:
@@ -124,14 +127,25 @@ try:
         # Status bar
         agc_mode = "smooth" if use_smooth_agc else "per-frame"
         denoise_str = "on" if use_denoise else "off"
+        rec_str = f" REC({recorder.frame_count}fr)" if recorder else ""
         pal_name = PALETTE_NAMES.get(palettes[palette_idx], str(palettes[palette_idx]))
-        cv2.putText(display, f"{pal_name}  AGC:{agc_mode}  DNR:{denoise_str}  |  q=quit s=save c=palette n=NUC a=AGC d=DNR r=reset +/-=zoom",
+        cv2.putText(display, f"{pal_name}  AGC:{agc_mode}  DNR:{denoise_str}{rec_str}  |  q=quit s=snap r=rec c=pal n=NUC a=AGC d=DNR e=reset +/-=zoom",
                     (10, display.shape[0] - 12),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200) if not recorder else (0, 0, 255), 1,
                     cv2.LINE_AA)
 
         cv2.imshow("T2 Pro - Thermal + Temperature", display)
         frame_count += 1
+
+        # Record frame if recorder is active
+        if recorder is not None:
+            try:
+                recorder.record_frame_fast()
+            except Exception as e:
+                print(f"Recording error: {e}")
+                metadata = recorder.stop()
+                print(f"Recording stopped: {metadata['frame_count']} frames")
+                recorder = None
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -173,6 +187,17 @@ try:
             scale = max(scale - 1, 2)
             print(f"Scale: {scale}x ({256*scale}x{192*scale})")
         elif key == ord('r'):
+            if recorder is None:
+                recorder = ThermalRecorder(cam, tlib=tlib, output_dir="recordings")
+                path = recorder.start()
+                print(f"Recording started: {path}")
+            else:
+                metadata = recorder.stop()
+                print(f"Recording stopped: {metadata['frame_count']} frames, "
+                      f"{metadata['fps']:.1f} fps, {metadata['duration_s']:.1f}s")
+                print(f"  Saved to: {recorder.session_path}")
+                recorder = None
+        elif key == ord('e'):
             agc.reset()
             print("AGC range reset.")
 
@@ -183,6 +208,10 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 finally:
+    if recorder is not None:
+        metadata = recorder.stop()
+        print(f"Recording stopped: {metadata['frame_count']} frames, "
+              f"{metadata['fps']:.1f} fps")
     print("Stopping stream...")
     cam.stop_stream()
     print(f"Stream closed: is_streaming={cam.is_streaming}")

@@ -6,5 +6,6 @@ build/
 dist/
 thermal_captures/
 snapshots/
+recordings/
 *.npy
 *.png
